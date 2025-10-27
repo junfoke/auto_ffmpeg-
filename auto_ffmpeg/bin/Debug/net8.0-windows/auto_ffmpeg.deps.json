@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "auto_ffmpeg/1.0.0": {
+        "runtime": {
+          "auto_ffmpeg.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "auto_ffmpeg/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}
