@@ -1,0 +1,80 @@
+## Ignore Visual Studio build files and user settings
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Tt]emp/
+[Tt]mp/
+TestResults/
+*.log
+*.vspscc
+*.vssscc
+*.cache
+*.pdb
+*.obj
+*.exe
+*.dll
+*.tmp
+*.bak
+*.user
+*.suo
+*.userosscache
+*.userprefs
+*.ncb
+*.sdf
+*.opensdf
+*.dbmdl
+
+# Visual Studio folders
+.vs/
+.vscode/
+.idea/
+
+# Publish output
+publish/
+out/
+artifacts/
+AppPackages/
+BundleArtifacts/
+*.appx
+*.appxbundle
+*.appxupload
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+*.nuspec
+project.lock.json
+
+# Configuration transforms
+*.config.transform
+*.config.user
+
+# Others
+*.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.orig
+*.rej
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# Backup & temp
+*.bak
+*.old
+*.tmp
+*.temp
+
+# Logs
+*.log
+*.trace
+
+# Optional: ignore ffmpeg.exe if bạn để cùng thư mục app
+ffmpeg.exe

@@ -7,16 +7,16 @@
       "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|d:\\myproject\\c#\\auto_ffmpeg\\auto_ffmpeg\\auto_ffmpeg.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
-      "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\auto_ffmpeg.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
+      "AbsoluteMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form",
+      "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form"
     },
     {
       "AbsoluteMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|d:\\myproject\\c#\\auto_ffmpeg\\auto_ffmpeg\\form1.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\form1.designer.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|d:\\myproject\\c#\\auto_ffmpeg\\auto_ffmpeg\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form",
-      "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\form1.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}|Form"
+      "AbsoluteMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|d:\\myproject\\c#\\auto_ffmpeg\\auto_ffmpeg\\auto_ffmpeg.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
+      "RelativeMoniker": "D:0:0:{AA40CB23-BB11-4460-BDC4-781EEC0F4F99}|auto_ffmpeg\\auto_ffmpeg.csproj|solutionrelative:auto_ffmpeg\\auto_ffmpeg.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
     }
   ],
   "DocumentGroupContainers": [
@@ -54,16 +54,15 @@
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
-              "Title": "auto_ffmpeg",
+              "DocumentIndex": 3,
+              "Title": "auto_ffmpeg.csproj",
               "DocumentMoniker": "D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\auto_ffmpeg.csproj",
               "RelativeDocumentMoniker": "auto_ffmpeg\\auto_ffmpeg.csproj",
               "ToolTip": "D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\auto_ffmpeg.csproj",
               "RelativeToolTip": "auto_ffmpeg\\auto_ffmpeg.csproj",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000758|",
-              "WhenOpened": "2025-10-27T03:33:51.702Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-10-27T03:33:51.702Z"
             },
             {
               "$type": "Document",
@@ -73,7 +72,7 @@
               "RelativeDocumentMoniker": "auto_ffmpeg\\Program.cs",
               "ToolTip": "D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\Program.cs",
               "RelativeToolTip": "auto_ffmpeg\\Program.cs",
-              "ViewState": "AgIAAHEAAAAAAAAAAAAkwI8AAAAhAAAAAAAAAA==",
+              "ViewState": "AgIAANoAAAAAAAAAAAAAwN8AAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-10-27T03:32:08.666Z",
               "EditorCaption": ""
@@ -88,20 +87,18 @@
               "RelativeToolTip": "auto_ffmpeg\\Form1.Designer.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-10-27T03:31:48.591Z",
-              "EditorCaption": ""
+              "WhenOpened": "2025-10-27T03:31:48.591Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 3,
+              "DocumentIndex": 1,
               "Title": "Form1.cs [Design]",
               "DocumentMoniker": "D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\Form1.cs",
               "RelativeDocumentMoniker": "auto_ffmpeg\\Form1.cs",
               "ToolTip": "D:\\MyProject\\c#\\auto_ffmpeg\\auto_ffmpeg\\Form1.cs [Design]",
               "RelativeToolTip": "auto_ffmpeg\\Form1.cs [Design]",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2025-10-27T03:30:53.351Z",
-              "EditorCaption": " [Design]"
+              "WhenOpened": "2025-10-27T03:30:53.351Z"
             }
           ]
         },

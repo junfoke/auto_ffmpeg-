@@ -14,3 +14,4 @@ D:\MyProject\c#\auto_ffmpeg\auto_ffmpeg\obj\Debug\net8.0-windows\refint\auto_ffm
 D:\MyProject\c#\auto_ffmpeg\auto_ffmpeg\obj\Debug\net8.0-windows\auto_ffmpeg.pdb
 D:\MyProject\c#\auto_ffmpeg\auto_ffmpeg\obj\Debug\net8.0-windows\auto_ffmpeg.genruntimeconfig.cache
 D:\MyProject\c#\auto_ffmpeg\auto_ffmpeg\obj\Debug\net8.0-windows\ref\auto_ffmpeg.dll
+D:\MyProject\c#\auto_ffmpeg\auto_ffmpeg\obj\Debug\net8.0-windows\auto_ffmpeg.sourcelink.json
