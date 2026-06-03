@@ -78,3 +78,6 @@ desktop.ini
 
 # Optional: ignore ffmpeg.exe if bạn để cùng thư mục app
 ffmpeg.exe
+
+# Superpowers working docs (plans/specs) - keep local only
+docs/superpowers/
