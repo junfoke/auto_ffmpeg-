@@ -76,6 +76,11 @@ public static class DriveDownloader
             WorkingDirectory = outputDir
         };
 
+        // snapshot existing files so a cancel only deletes partials we created
+        HashSet<string> filesBefore;
+        try { filesBefore = Directory.EnumerateFiles(outputDir).ToHashSet(StringComparer.OrdinalIgnoreCase); }
+        catch { filesBefore = new(StringComparer.OrdinalIgnoreCase); }
+
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
         proc.OutputDataReceived += (_, e) =>
@@ -100,9 +105,50 @@ public static class DriveDownloader
         catch (OperationCanceledException)
         {
             try { proc.Kill(entireProcessTree: true); } catch { }
+            await CleanupPartialsAsync(outputDir, filesBefore, onLog);
             throw;
         }
 
         return proc.ExitCode == 0;
+    }
+
+    private static bool IsPartialFile(string name) =>
+        name.Contains(".part", StringComparison.OrdinalIgnoreCase)   // .part and .part-FragN
+        || name.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".temp", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Delete yt-dlp partial/temp files created during this download (those not present in filesBefore).
+    /// Retries briefly since the killed process may still hold the file handle.
+    /// </summary>
+    private static async Task CleanupPartialsAsync(string dir, HashSet<string> filesBefore, Action<string>? onLog)
+    {
+        List<string> targets;
+        try
+        {
+            targets = Directory.EnumerateFiles(dir)
+                .Where(f => !filesBefore.Contains(f) && IsPartialFile(Path.GetFileName(f)))
+                .ToList();
+        }
+        catch { return; }
+
+        foreach (var f in targets)
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    File.Delete(f);
+                    onLog?.Invoke($"[INFO] Da xoa file tai do: {Path.GetFileName(f)}");
+                    break;
+                }
+                catch (IOException) when (attempt < 2) { await Task.Delay(200); }
+                catch (Exception ex)
+                {
+                    onLog?.Invoke($"[WARN] Khong xoa duoc {Path.GetFileName(f)}: {ex.Message}");
+                    break;
+                }
+            }
+        }
     }
 }
