@@ -187,7 +187,8 @@ public static class FfmpegService
 
         try
         {
-            await Task.Run(() => p.WaitForExit(), ct);
+            // WaitForExitAsync genuinely observes the token, unlike Task.Run(() => WaitForExit(), ct)
+            await p.WaitForExitAsync(ct);
         }
         catch (OperationCanceledException)
         {

@@ -94,7 +94,8 @@ public static class DriveDownloader
 
         try
         {
-            await Task.Run(() => proc.WaitForExit(), ct);
+            // WaitForExitAsync genuinely observes the token, unlike Task.Run(() => WaitForExit(), ct)
+            await proc.WaitForExitAsync(ct);
         }
         catch (OperationCanceledException)
         {
