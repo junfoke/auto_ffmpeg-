@@ -61,10 +61,11 @@ public class MainForm : Form
     // ====== Drive tab ======
     readonly TextBox txtDriveUrl       = new();
     readonly Button  btnDownloadDrive  = new() { Text = "TAI VE", Width = 180, Height = 38 };
-    readonly CheckBox chkUseCookies    = new() { Text = "Dung cookies tu Chrome", AutoSize = true };
-    readonly TextBox txtChromeProfile  = new() { Text = "Default", Width = 140, Enabled = false };
+    readonly ComboBox cboBrowser       = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+    readonly TextBox txtChromeProfile  = new() { PlaceholderText = "mac dinh", Width = 140, Enabled = false };
     readonly TextBox txtCookiesFile    = new() { ReadOnly = true };
     readonly Button  btnPickCookies    = new() { Text = "cookies.txt..." };
+    readonly CheckBox chkFastDownload  = new() { Text = "Tang toc (aria2c)", AutoSize = true, Checked = true };
     readonly TextBox txtDriveOutDir    = new() { ReadOnly = true, Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
     readonly Button  btnPickDriveOutDir = new() { Text = "Thu muc..." };
 
@@ -273,10 +274,12 @@ public class MainForm : Form
 
         // Cookies row
         var cookieFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, BackColor = PanelColor };
-        cookieFlow.Controls.Add(chkUseCookies);
+        cboBrowser.Items.AddRange(new object[] { "(Khong dung)", "Chrome", "Firefox", "Edge", "Brave" });
+        cboBrowser.SelectedIndex = 0;
+        cookieFlow.Controls.Add(cboBrowser);
         cookieFlow.Controls.Add(new Label { Text = "  Profile:", AutoSize = true, ForeColor = MutedColor, Padding = new Padding(0, 6, 4, 0) });
         cookieFlow.Controls.Add(txtChromeProfile);
-        grid.Controls.Add(MakeLabel("Cookies Chrome"), 0, 1);
+        grid.Controls.Add(MakeLabel("Cookies trinh duyet"), 0, 1);
         grid.SetColumnSpan(cookieFlow, 2);
         grid.Controls.Add(cookieFlow, 1, 1);
 
@@ -296,11 +299,16 @@ public class MainForm : Form
         // output dir
         AddRow(grid, "Thu muc luu", txtDriveOutDir, btnPickDriveOutDir, row: 3);
 
-        // action row
-        var actionFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Padding = new Padding(0, 14, 0, 0), BackColor = PanelColor };
-        actionFlow.Controls.Add(btnDownloadDrive);
-        grid.SetColumnSpan(actionFlow, 3);
-        grid.Controls.Add(actionFlow, 0, 4);
+        // action row: checkbox left (vertically centered), download button right
+        var actionRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = PanelColor, Padding = new Padding(0, 14, 0, 0) };
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        chkFastDownload.Anchor = AnchorStyles.Left;
+        btnDownloadDrive.Anchor = AnchorStyles.Right;
+        actionRow.Controls.Add(chkFastDownload, 0, 0);
+        actionRow.Controls.Add(btnDownloadDrive, 1, 0);
+        grid.SetColumnSpan(actionRow, 3);
+        grid.Controls.Add(actionRow, 0, 4);
         grid.RowStyles[4] = new RowStyle(SizeType.Absolute, 60);
 
         return grid;
@@ -445,7 +453,7 @@ public class MainForm : Form
         btnBatchMerge.Click  += async (_, _) => await RunBatchAsync();
         btnDownloadDrive.Click += async (_, _) => await RunDriveDownloadAsync();
         btnCancel.Click      += (_, _) => _cts?.Cancel();
-        chkUseCookies.CheckedChanged += (_, _) => txtChromeProfile.Enabled = chkUseCookies.Checked;
+        cboBrowser.SelectedIndexChanged += (_, _) => txtChromeProfile.Enabled = cboBrowser.SelectedIndex > 0;
         btnPickCookies.Click += (_, _) =>
         {
             using var ofd = new OpenFileDialog { Title = "Chon file cookies", Filter = "Text|*.txt|Tat ca|*.*" };
@@ -757,9 +765,11 @@ public class MainForm : Form
 
         try
         {
+            var browser = cboBrowser.SelectedIndex > 0 ? cboBrowser.SelectedItem?.ToString()?.ToLowerInvariant() : null;
             var ok = await DriveDownloader.DownloadAsync(
-                url, chkUseCookies.Checked, txtChromeProfile.Text.Trim(),
+                url, browser, txtChromeProfile.Text.Trim(),
                 txtCookiesFile.Text.Trim(),
+                chkFastDownload.Checked,
                 outDir,
                 _cts!.Token, onLog: AppendLog, onProgress: OnDriveProgress);
 

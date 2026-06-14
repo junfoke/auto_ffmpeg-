@@ -11,20 +11,26 @@ public static class DriveDownloader
         new(@"\[download\]\s+(\d+(?:\.\d+)?)%", RegexOptions.Compiled);
 
     private static string? _cachedYtDlp;
+    private static string? _cachedAria2c;
 
-    public static string? ResolveYtDlpPath()
+    public static string? ResolveYtDlpPath() => ResolveExe("yt-dlp", ref _cachedYtDlp);
+
+    /// <summary>Locate aria2c.exe (bundled next to the app or on PATH). Null if unavailable.</summary>
+    public static string? ResolveAria2cPath() => ResolveExe("aria2c", ref _cachedAria2c);
+
+    private static string? ResolveExe(string name, ref string? cache)
     {
-        if (_cachedYtDlp != null && File.Exists(_cachedYtDlp)) return _cachedYtDlp;
+        if (cache != null && File.Exists(cache)) return cache;
 
-        string local = Path.Combine(AppContext.BaseDirectory, "yt-dlp.exe");
-        if (File.Exists(local)) return _cachedYtDlp = local;
+        string local = Path.Combine(AppContext.BaseDirectory, name + ".exe");
+        if (File.Exists(local)) return cache = local;
 
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "where",
-                Arguments = "yt-dlp",
+                Arguments = name,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 CreateNoWindow = true
@@ -32,7 +38,7 @@ public static class DriveDownloader
             using var p = Process.Start(psi);
             string? line = p?.StandardOutput.ReadLine();
             if (!string.IsNullOrWhiteSpace(line) && File.Exists(line))
-                return _cachedYtDlp = line;
+                return cache = line;
         }
         catch { }
         return null;
@@ -44,8 +50,9 @@ public static class DriveDownloader
     /// </summary>
     public static async Task<bool> DownloadAsync(
         string url,
-        bool useCookies, string chromeProfile,
+        string? browser, string profile,
         string? cookiesFile,
+        bool useAria2c,
         string outputDir,
         CancellationToken ct,
         Action<string>? onLog = null,
@@ -58,16 +65,31 @@ public static class DriveDownloader
             return false;
         }
 
+        var browserSpec = string.IsNullOrEmpty(browser)
+            ? browser
+            : string.IsNullOrEmpty(profile) ? browser : $"{browser}:{profile}";
+
         var cookieArg = !string.IsNullOrEmpty(cookiesFile) && File.Exists(cookiesFile)
             ? $"--cookies \"{cookiesFile}\" "
-            : useCookies
-                ? $"--cookies-from-browser \"chrome:{chromeProfile}\" "
+            : !string.IsNullOrEmpty(browserSpec)
+                ? $"--cookies-from-browser \"{browserSpec}\" "
                 : "";
+
+        // aria2c downloads in parallel segments (like IDM), bypassing Drive's single-connection throttle
+        var aria2cArg = "";
+        if (useAria2c)
+        {
+            var aria2c = ResolveAria2cPath();
+            if (aria2c != null)
+                aria2cArg = $"--downloader \"{aria2c}\" --downloader-args \"aria2c:-x 16 -s 16 -k 1M\" ";
+            else
+                onLog?.Invoke("[WARN] Khong tim thay aria2c.exe, tai bang che do thuong (cham hon). Dat aria2c.exe cung thu muc ung dung de tang toc.");
+        }
 
         var psi = new ProcessStartInfo
         {
             // --newline forces yt-dlp to emit progress on separate lines so we can parse %
-            Arguments = $"{cookieArg}--newline \"{url}\" -o \"%(title)s.%(ext)s\"",
+            Arguments = $"{cookieArg}{aria2cArg}--newline \"{url}\" -o \"%(title)s.%(ext)s\"",
             FileName = ytdlp,
             UseShellExecute = false,
             RedirectStandardOutput = true,
