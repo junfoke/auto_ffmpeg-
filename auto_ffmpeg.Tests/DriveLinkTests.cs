@@ -12,9 +12,11 @@ public class DriveLinkTests
         => Assert.Equal(expected, DriveLink.ExtractFileId(url));
 
     [Theory]
+    [InlineData(null)]
     [InlineData("https://example.com/file/d/")]
     [InlineData("not a url")]
     [InlineData("")]
-    public void ExtractFileId_Invalid_ReturnsNull(string url)
+    [InlineData("https://drive.google.com/file/d/SHORT123/view")]
+    public void ExtractFileId_Invalid_ReturnsNull(string? url)
         => Assert.Null(DriveLink.ExtractFileId(url));
 }

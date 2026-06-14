@@ -10,10 +10,11 @@ public static class DriveLink
         new(@"[?&]id=([A-Za-z0-9_-]{10,})", RegexOptions.Compiled),
     ];
 
-    /// <summary>Rút fileId từ link share Drive. Null nếu không khớp.</summary>
+    /// <summary>Extracts the fileId from a Google Drive share link. Returns null if no match.</summary>
     public static string? ExtractFileId(string? shareUrl)
     {
         if (string.IsNullOrWhiteSpace(shareUrl)) return null;
+        if (!shareUrl.Contains("google.com", StringComparison.OrdinalIgnoreCase)) return null;
         foreach (var p in Patterns)
         {
             var m = p.Match(shareUrl);
