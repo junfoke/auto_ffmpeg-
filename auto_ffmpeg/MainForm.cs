@@ -762,9 +762,8 @@ public class MainForm : Form
         if (fileId is null) { AppendLog("[ERROR] Link Drive khong hop le."); return false; }
 
         SetStatus("Dang lay link video (WebView2)...");
-        CaptureResult? cap;
-        using (var capturer = new GoogleVideoCapturer())
-            cap = await capturer.CaptureAsync(fileId, browser, ct, AppendLog);
+        using var capturer = new GoogleVideoCapturer();
+        var cap = await capturer.CaptureAsync(fileId, browser, ct, AppendLog);
 
         ct.ThrowIfCancellationRequested();
 
@@ -782,10 +781,13 @@ public class MainForm : Form
 
         try
         {
+            // Download through the SAME authenticated browser session (only client Google accepts).
             SetStatus("Dang tai video...");
-            if (!await Aria2Downloader.DownloadAsync(cap.VideoUrl, videoTmp, ct, AppendLog, OnDriveProgress)) return false;
+            if (!await capturer.DownloadViaBrowserAsync(cap.VideoUrl, videoTmp, ct, OnDriveProgress))
+            { AppendLog("[WARN] Tai video that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
             SetStatus("Dang tai audio...");
-            if (!await Aria2Downloader.DownloadAsync(cap.AudioUrl, audioTmp, ct, AppendLog, OnDriveProgress)) return false;
+            if (!await capturer.DownloadViaBrowserAsync(cap.AudioUrl, audioTmp, ct, OnDriveProgress))
+            { AppendLog("[WARN] Tai audio that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
             SetStatus("Dang ghep...");
             return await FfmpegService.MergeAsync(videoTmp, audioTmp, outPath, useCopy: true, fallbackAac: true, ct, OnDriveProgress, AppendLog);
         }
@@ -795,6 +797,10 @@ public class MainForm : Form
             TryDeleteTemp(audioTmp);
         }
     }
+
+    private Task<bool> FallbackYtdlpAsync(string url, string? browser, string outDir, CancellationToken ct)
+        => DriveDownloader.DownloadAsync(url, browser, txtChromeProfile.Text.Trim(),
+            txtCookiesFile.Text.Trim(), chkFastDownload.Checked, outDir, ct, AppendLog, OnDriveProgress);
 
     private static void TryDeleteTemp(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
 

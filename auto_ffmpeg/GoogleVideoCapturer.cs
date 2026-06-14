@@ -158,6 +158,81 @@ public sealed class GoogleVideoCapturer : Form
         await _web.EnsureCoreWebView2Async(env);
     }
 
+    /// <summary>
+    /// Download a (cleaned) stream URL THROUGH the authenticated browser session, so it uses the
+    /// browser's stack/cookies/fingerprint that Google accepts (aria2c/curl get 403 on these).
+    /// Forces a download (vs inline playback) by injecting Content-Disposition via CDP Fetch.
+    /// Reuses this instance's CoreWebView2 (already authenticated by CaptureAsync). Returns false on failure.
+    /// </summary>
+    public async Task<bool> DownloadViaBrowserAsync(string url, string outputPath, CancellationToken ct, Action<int>? onProgress)
+    {
+        var core = _web.CoreWebView2;
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnFetchPaused(object? s, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
+                var root = doc.RootElement;
+                var requestId = root.GetProperty("requestId").GetString();
+                int status = root.TryGetProperty("responseStatusCode", out var sc) ? sc.GetInt32() : 200;
+                _log?.Invoke($"[DEBUG] Browser GET status={status}");
+
+                var headers = new List<object>();
+                if (root.TryGetProperty("responseHeaders", out var rh) && rh.ValueKind == JsonValueKind.Array)
+                    foreach (var h in rh.EnumerateArray())
+                        headers.Add(new { name = h.GetProperty("name").GetString(), value = h.GetProperty("value").GetString() });
+                headers.Add(new { name = "Content-Disposition", value = "attachment" });
+
+                var prm = JsonSerializer.Serialize(new { requestId, responseCode = status, responseHeaders = headers });
+                _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueResponse", prm);
+            }
+            catch (Exception ex) { _log?.Invoke($"[DEBUG] Fetch paused loi: {ex.Message}"); }
+        }
+
+        void OnDownloadStarting(object? s, CoreWebView2DownloadStartingEventArgs e)
+        {
+            try
+            {
+                e.Handled = true;                 // suppress default download UI
+                e.ResultFilePath = outputPath;
+                var op = e.DownloadOperation;
+                op.StateChanged += (_, _) =>
+                {
+                    if (op.State == CoreWebView2DownloadState.Completed) tcs.TrySetResult(true);
+                    else if (op.State == CoreWebView2DownloadState.Interrupted)
+                    { _log?.Invoke($"[WARN] Tai gian doan: {op.InterruptReason}"); tcs.TrySetResult(false); }
+                };
+                op.BytesReceivedChanged += (_, _) =>
+                {
+                    if (op.TotalBytesToReceive is ulong tot && tot > 0)
+                        onProgress?.Invoke((int)Math.Min(100, (double)op.BytesReceived / tot * 100));
+                };
+            }
+            catch (Exception ex) { _log?.Invoke($"[DEBUG] DownloadStarting loi: {ex.Message}"); tcs.TrySetResult(false); }
+        }
+
+        var fetchRecv = core.GetDevToolsProtocolEventReceiver("Fetch.requestPaused");
+        fetchRecv.DevToolsProtocolEventReceived += OnFetchPaused;
+        core.DownloadStarting += OnDownloadStarting;
+        try
+        {
+            await core.CallDevToolsProtocolMethodAsync("Fetch.enable",
+                "{\"patterns\":[{\"urlPattern\":\"*videoplayback*\",\"requestStage\":\"Response\"}]}");
+            core.Navigate(url);
+            using (ct.Register(() => tcs.TrySetCanceled()))
+                return await tcs.Task;
+        }
+        catch (OperationCanceledException) { return false; }
+        finally
+        {
+            fetchRecv.DevToolsProtocolEventReceived -= OnFetchPaused;
+            core.DownloadStarting -= OnDownloadStarting;
+            try { await core.CallDevToolsProtocolMethodAsync("Fetch.disable", "{}"); } catch { }
+        }
+    }
+
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (e.Uri.Contains("accounts.google.com"))
