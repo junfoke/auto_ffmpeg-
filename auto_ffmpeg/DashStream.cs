@@ -57,6 +57,7 @@ public static class DashStream
                 return k is not ("range" or "rn" or "rbuf");
             });
 
-        return baseUrl + "?" + string.Join("&", kept);
+        var joined = string.Join("&", kept);
+        return joined.Length == 0 ? baseUrl : baseUrl + "?" + joined;
     }
 }
