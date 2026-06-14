@@ -86,7 +86,7 @@ public sealed class GoogleVideoCapturer : Form
                 // The Drive preview player lives in a cross-origin iframe, so top-frame
                 // play() can't reach it. Until a stream is seen, synthesize a click at the
                 // center via CDP (origin-agnostic) to press the player's play button.
-                if (_streams.Count == 0 && sw.Elapsed - lastClick > TimeSpan.FromSeconds(2))
+                if (_streams.Count == 0 && sw.Elapsed.TotalSeconds < 8 && sw.Elapsed - lastClick > TimeSpan.FromSeconds(2))
                 {
                     lastClick = sw.Elapsed;
                     await ClickCenterAsync(core);
@@ -266,15 +266,21 @@ public sealed class GoogleVideoCapturer : Form
             var url = ti.GetProperty("url").GetString();
             _log?.Invoke($"[DEBUG] Attached target type={type} url={Trunc(url)}");
             if (!string.IsNullOrEmpty(sessionId))
-                _ = EnableNetworkForSessionAsync(sessionId!);
+                _ = InitChildSessionAsync(sessionId!);
         }
         catch (Exception ex) { _log?.Invoke($"[DEBUG] OnAttached loi: {ex.Message}"); }
     }
 
-    private async Task EnableNetworkForSessionAsync(string sessionId)
+    // Enable Network on the child session AND recurse auto-attach into ITS children, so media
+    // requests from deeply nested OOPIFs / workers (where the player actually fetches) are seen.
+    private async Task InitChildSessionAsync(string sessionId)
     {
-        try { await _web.CoreWebView2.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Network.enable", "{}"); }
+        var core = _web.CoreWebView2;
+        try { await core.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Network.enable", "{}"); }
         catch (Exception ex) { _log?.Invoke($"[DEBUG] Network.enable(session) loi: {ex.Message}"); }
+        try { await core.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Target.setAutoAttach",
+            "{\"autoAttach\":true,\"waitForDebuggerOnStart\":false,\"flatten\":true}"); }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] setAutoAttach(session) loi: {ex.Message}"); }
     }
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
