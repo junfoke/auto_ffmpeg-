@@ -170,6 +170,8 @@ public sealed class GoogleVideoCapturer : Form
     {
         var core = _web.CoreWebView2;
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool started = false;
+        bool reqLogged = false;
 
         void OnFetchPaused(object? s, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
         {
@@ -178,17 +180,42 @@ public sealed class GoogleVideoCapturer : Form
                 using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
                 var root = doc.RootElement;
                 var requestId = root.GetProperty("requestId").GetString();
-                int status = root.TryGetProperty("responseStatusCode", out var sc) ? sc.GetInt32() : 200;
+
+                // Request stage: log the browser's exact headers once (to compare vs aria2c), then continue.
+                if (!root.TryGetProperty("responseStatusCode", out var sc))
+                {
+                    if (!reqLogged && root.TryGetProperty("request", out var req) && req.TryGetProperty("headers", out var hh))
+                    { reqLogged = true; var raw = hh.GetRawText(); _log?.Invoke("[DEBUG] req headers: " + (raw.Length > 500 ? raw[..500] : raw)); }
+                    _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueRequest", JsonSerializer.Serialize(new { requestId }));
+                    return;
+                }
+
+                int status = sc.GetInt32();
                 _log?.Invoke($"[DEBUG] Browser GET status={status}");
 
+                // Redirect: follow unchanged.
+                if (status is >= 300 and < 400)
+                {
+                    _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueResponse", JsonSerializer.Serialize(new { requestId }));
+                    return;
+                }
+
+                // 2xx: force a download (not inline playback) by replacing Content-Type with
+                // octet-stream and adding Content-Disposition: attachment.
                 var headers = new List<object>();
                 if (root.TryGetProperty("responseHeaders", out var rh) && rh.ValueKind == JsonValueKind.Array)
                     foreach (var h in rh.EnumerateArray())
-                        headers.Add(new { name = h.GetProperty("name").GetString(), value = h.GetProperty("value").GetString() });
+                    {
+                        var n = h.GetProperty("name").GetString();
+                        if (n != null && (n.Equals("content-type", StringComparison.OrdinalIgnoreCase)
+                            || n.Equals("content-disposition", StringComparison.OrdinalIgnoreCase))) continue;
+                        headers.Add(new { name = n, value = h.GetProperty("value").GetString() });
+                    }
+                headers.Add(new { name = "Content-Type", value = "application/octet-stream" });
                 headers.Add(new { name = "Content-Disposition", value = "attachment" });
 
-                var prm = JsonSerializer.Serialize(new { requestId, responseCode = status, responseHeaders = headers });
-                _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueResponse", prm);
+                _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueResponse",
+                    JsonSerializer.Serialize(new { requestId, responseCode = status, responseHeaders = headers }));
             }
             catch (Exception ex) { _log?.Invoke($"[DEBUG] Fetch paused loi: {ex.Message}"); }
         }
@@ -197,6 +224,7 @@ public sealed class GoogleVideoCapturer : Form
         {
             try
             {
+                started = true;
                 e.Handled = true;                 // suppress default download UI
                 e.ResultFilePath = outputPath;
                 var op = e.DownloadOperation;
@@ -221,10 +249,15 @@ public sealed class GoogleVideoCapturer : Form
         try
         {
             await core.CallDevToolsProtocolMethodAsync("Fetch.enable",
-                "{\"patterns\":[{\"urlPattern\":\"*videoplayback*\",\"requestStage\":\"Response\"}]}");
+                "{\"patterns\":[{\"urlPattern\":\"*videoplayback*\",\"requestStage\":\"Request\"},{\"urlPattern\":\"*videoplayback*\",\"requestStage\":\"Response\"}]}");
             core.Navigate(url);
             using (ct.Register(() => tcs.TrySetCanceled()))
+            {
+                // If the download never STARTS within 25s, bail (avoids hanging on inline playback).
+                var gate = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(25), ct));
+                if (gate != tcs.Task && !started) { _log?.Invoke("[WARN] Browser download khong bat dau (timeout)."); return false; }
                 return await tcs.Task;
+            }
         }
         catch (OperationCanceledException) { return false; }
         finally
