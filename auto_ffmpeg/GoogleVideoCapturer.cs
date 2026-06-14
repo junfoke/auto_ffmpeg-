@@ -179,21 +179,41 @@ public sealed class GoogleVideoCapturer : Form
                 RedirectStandardOutput = true, RedirectStandardError = true
             };
             using var p = System.Diagnostics.Process.Start(psi)!;
+            var stderrTask = p.StandardError.ReadToEndAsync();
             await p.WaitForExitAsync();
-            if (!File.Exists(tmp)) { _log?.Invoke("[INFO] Khong xuat duoc cookie, se dang nhap WebView2 neu can."); return; }
+            var err = await stderrTask;
+            if (p.ExitCode != 0 || !File.Exists(tmp) || new FileInfo(tmp).Length == 0)
+            {
+                _log?.Invoke($"[INFO] Khong xuat duoc cookie (exit {p.ExitCode}), se dang nhap WebView2 neu can. {err}".Trim());
+                return;
+            }
 
             var cm = _web.CoreWebView2.CookieManager;
             int n = 0;
             foreach (var line in await File.ReadAllLinesAsync(tmp))
             {
-                if (line.StartsWith('#') || string.IsNullOrWhiteSpace(line)) continue;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                bool httpOnly = false;
+                var raw = line;
+                if (raw.StartsWith("#HttpOnly_", StringComparison.Ordinal))
+                {
+                    httpOnly = true;
+                    raw = raw.Substring("#HttpOnly_".Length); // strip prefix -> real domain
+                }
+                else if (raw.StartsWith('#'))
+                {
+                    continue; // genuine comment line
+                }
+
                 // Netscape cookies.txt: domain \t flag \t path \t secure \t expiry \t name \t value
-                var f = line.Split('\t');
+                var f = raw.Split('\t');
                 if (f.Length < 7) continue;
                 var domain = f[0];
                 if (!domain.Contains("google.com") && !domain.Contains("youtube.com")) continue;
                 var cookie = cm.CreateCookie(f[5], f[6], domain, f[2]);
                 cookie.IsSecure = f[3].Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                cookie.IsHttpOnly = httpOnly;
                 if (long.TryParse(f[4], out var exp) && exp > 0)
                     cookie.Expires = DateTimeOffset.FromUnixTimeSeconds(exp).UtcDateTime;
                 cm.AddOrUpdateCookie(cookie);
