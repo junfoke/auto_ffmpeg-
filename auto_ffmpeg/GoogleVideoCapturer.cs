@@ -38,7 +38,7 @@ public sealed class GoogleVideoCapturer : Form
                      "auto_ffmpeg", "WebView2");
 
     /// <summary>Opens the player for fileId and captures the best video+audio stream URLs. Null on timeout.</summary>
-    public async Task<CaptureResult?> CaptureAsync(string fileId, CancellationToken ct, Action<string>? onLog)
+    public async Task<CaptureResult?> CaptureAsync(string fileId, string? browser, CancellationToken ct, Action<string>? onLog)
     {
         _log = onLog;
 
@@ -54,6 +54,7 @@ public sealed class GoogleVideoCapturer : Form
         catch (Exception ex) { _log?.Invoke($"[WARN] Khong khoi tao duoc WebView2: {ex.Message}"); return null; }
 
         var core = _web.CoreWebView2;
+        await TryReuseCookiesAsync(browser);
         await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
         var receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
         receiver.DevToolsProtocolEventReceived += OnRequest;
@@ -155,5 +156,52 @@ public sealed class GoogleVideoCapturer : Form
         if (idx > 0) name = name[..idx];
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return name.Trim();
+    }
+
+    /// <summary>
+    /// Try injecting Google cookies from a source browser into WebView2 to avoid login.
+    /// browser: "firefox"/"chrome"/... or null/empty to skip.
+    /// </summary>
+    private async Task TryReuseCookiesAsync(string? browser)
+    {
+        if (string.IsNullOrEmpty(browser)) return;
+        var ytdlp = DriveDownloader.ResolveYtDlpPath();
+        if (ytdlp is null) { _log?.Invoke("[INFO] Khong co yt-dlp de xuat cookie, se dang nhap WebView2 neu can."); return; }
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"af_cookies_{Guid.NewGuid():N}.txt");
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = ytdlp,
+                Arguments = $"--cookies-from-browser \"{browser}\" --cookies \"{tmp}\" --skip-download --no-warnings \"https://drive.google.com/\"",
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            await p.WaitForExitAsync();
+            if (!File.Exists(tmp)) { _log?.Invoke("[INFO] Khong xuat duoc cookie, se dang nhap WebView2 neu can."); return; }
+
+            var cm = _web.CoreWebView2.CookieManager;
+            int n = 0;
+            foreach (var line in await File.ReadAllLinesAsync(tmp))
+            {
+                if (line.StartsWith('#') || string.IsNullOrWhiteSpace(line)) continue;
+                // Netscape cookies.txt: domain \t flag \t path \t secure \t expiry \t name \t value
+                var f = line.Split('\t');
+                if (f.Length < 7) continue;
+                var domain = f[0];
+                if (!domain.Contains("google.com") && !domain.Contains("youtube.com")) continue;
+                var cookie = cm.CreateCookie(f[5], f[6], domain, f[2]);
+                cookie.IsSecure = f[3].Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                if (long.TryParse(f[4], out var exp) && exp > 0)
+                    cookie.Expires = DateTimeOffset.FromUnixTimeSeconds(exp).UtcDateTime;
+                cm.AddOrUpdateCookie(cookie);
+                n++;
+            }
+            _log?.Invoke($"[INFO] Da nap {n} cookie tu {browser} vao WebView2.");
+        }
+        catch (Exception ex) { _log?.Invoke($"[INFO] Tai dung cookie that bai: {ex.Message}"); }
+        finally { try { File.Delete(tmp); } catch { } }
     }
 }
