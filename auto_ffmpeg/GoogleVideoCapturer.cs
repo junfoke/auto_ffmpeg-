@@ -1,5 +1,6 @@
 namespace auto_ffmpeg;
 
+using System.Drawing;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -23,10 +24,12 @@ public sealed class GoogleVideoCapturer : Form
     {
         Text = "Dang lay link video tu Google Drive...";
         Width = 900; Height = 600;
-        StartPosition = FormStartPosition.CenterScreen;
+        StartPosition = FormStartPosition.Manual;
+        Location = new Point(-32000, -32000);
+        Opacity = 0d;
+        FormBorderStyle = FormBorderStyle.SizableToolWindow;
         ShowInTaskbar = false;
         Controls.Add(_web);
-        WindowState = FormWindowState.Minimized; // hidden until login needed
         ShowIcon = false;
     }
 
@@ -38,22 +41,23 @@ public sealed class GoogleVideoCapturer : Form
     public async Task<CaptureResult?> CaptureAsync(string fileId, CancellationToken ct, Action<string>? onLog)
     {
         _log = onLog;
-        var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder);
-        await _web.EnsureCoreWebView2Async(env);
+
+        Show();   // off-screen; creates the real window handle so WebView2 can init and BeginInvoke works
+
+        try
+        {
+            var initTask = InitWebViewAsync();
+            var done = await Task.WhenAny(initTask, Task.Delay(TimeSpan.FromSeconds(30), ct));
+            if (done != initTask) { _log?.Invoke("[WARN] WebView2 khoi tao qua lau/that bai."); return null; }
+            await initTask; // observe exceptions
+        }
+        catch (Exception ex) { _log?.Invoke($"[WARN] Khong khoi tao duoc WebView2: {ex.Message}"); return null; }
 
         var core = _web.CoreWebView2;
         await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
         var receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
         receiver.DevToolsProtocolEventReceived += OnRequest;
-
-        core.NavigationStarting += (_, e) =>
-        {
-            if (e.Uri.Contains("accounts.google.com"))
-            {
-                _log?.Invoke("[INFO] Can dang nhap Google - hien cua so dang nhap.");
-                BeginInvoke(() => { WindowState = FormWindowState.Normal; Activate(); });
-            }
-        };
+        core.NavigationStarting += OnNavigationStarting;
 
         core.Navigate($"https://drive.google.com/file/d/{fileId}/preview");
 
@@ -77,8 +81,12 @@ public sealed class GoogleVideoCapturer : Form
             }
         }
         catch (OperationCanceledException) { return null; }
-
-        receiver.DevToolsProtocolEventReceived -= OnRequest;
+        finally
+        {
+            receiver.DevToolsProtocolEventReceived -= OnRequest;
+            core.NavigationStarting -= OnNavigationStarting;
+            try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
+        }
 
         var video = _streams.Values.Where(s => s.isVideo).OrderByDescending(s => s.clen).FirstOrDefault();
         var audio = _streams.Values.Where(s => !s.isVideo).OrderByDescending(s => s.clen).FirstOrDefault();
@@ -93,6 +101,31 @@ public sealed class GoogleVideoCapturer : Form
             DashStream.StripRange(video.url), DashStream.ExtFromMime(DashStream.GetQueryParam(video.url, "mime")),
             DashStream.StripRange(audio.url), DashStream.ExtFromMime(DashStream.GetQueryParam(audio.url, "mime")),
             title);
+    }
+
+    private async Task InitWebViewAsync()
+    {
+        var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder);
+        await _web.EnsureCoreWebView2Async(env);
+    }
+
+    private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (e.Uri.Contains("accounts.google.com"))
+        {
+            _log?.Invoke("[INFO] Can dang nhap Google - hien cua so dang nhap.");
+            BeginInvoke(() =>
+            {
+                Opacity = 1d;
+                StartPosition = FormStartPosition.CenterScreen;
+                Location = new Point(
+                    (Screen.PrimaryScreen!.WorkingArea.Width - Width) / 2,
+                    (Screen.PrimaryScreen!.WorkingArea.Height - Height) / 2);
+                WindowState = FormWindowState.Normal;
+                ShowInTaskbar = true;
+                Activate();
+            });
+        }
     }
 
     private void OnRequest(object? sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
