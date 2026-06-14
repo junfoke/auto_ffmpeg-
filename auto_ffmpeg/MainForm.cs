@@ -31,6 +31,7 @@ public class MainForm : Form
     readonly ProgressBar progress = new() { Style = ProgressBarStyle.Blocks, Minimum = 0, Maximum = 100, Height = 18 };
     readonly Button   btnCancel   = new() { Text = "Huy", Width = 80, Height = 32, Visible = false };
     readonly StringBuilder _logBuf = new();
+    readonly object _logLock = new();
     System.Windows.Forms.Timer _logTimer = null!;
     CancellationTokenSource? _cts;
     bool _hadError;
@@ -444,9 +445,13 @@ public class MainForm : Form
         _logTimer = new System.Windows.Forms.Timer { Interval = 150 };
         _logTimer.Tick += (_, _) =>
         {
-            if (_logBuf.Length == 0) return;
-            var s = _logBuf.ToString();
-            _logBuf.Clear();
+            string s;
+            lock (_logLock)
+            {
+                if (_logBuf.Length == 0) return;
+                s = _logBuf.ToString();
+                _logBuf.Clear();
+            }
             txtLog.AppendText(s);
             txtLog.SelectionStart = txtLog.TextLength;
             txtLog.ScrollToCaret();
@@ -573,13 +578,16 @@ public class MainForm : Form
         progress.Value = Math.Clamp(percent, 0, 100);
     }
 
-    void AppendLog(string line) => _logBuf.AppendLine(line);
+    void AppendLog(string line)
+    {
+        lock (_logLock) _logBuf.AppendLine(line);
+    }
 
     // clears both the visible log and the pending buffer so a stale flush
     // from a previous run can't leak into the next one
     void ClearLog()
     {
-        _logBuf.Clear();
+        lock (_logLock) _logBuf.Clear();
         txtLog.Clear();
     }
 
@@ -757,6 +765,8 @@ public class MainForm : Form
         CaptureResult? cap;
         using (var capturer = new GoogleVideoCapturer())
             cap = await capturer.CaptureAsync(fileId, browser, ct, AppendLog);
+
+        ct.ThrowIfCancellationRequested();
 
         if (cap is null)
         {
