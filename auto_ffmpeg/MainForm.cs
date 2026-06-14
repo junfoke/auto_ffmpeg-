@@ -80,7 +80,7 @@ public class MainForm : Form
         Text = "Auto FFmpeg Muxer";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 940;
-        Height = 780;
+        Height = 840;
         Font = new Font("Segoe UI", 10f);
         BackColor = BgColor;
         ForeColor = TextColor;
@@ -210,7 +210,7 @@ public class MainForm : Form
         // ====== Root layout ======
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = BgColor };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 340));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 400));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         header.Dock = DockStyle.Fill;
         bottom.Dock = DockStyle.Fill;
