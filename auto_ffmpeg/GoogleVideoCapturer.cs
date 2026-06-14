@@ -68,8 +68,10 @@ public sealed class GoogleVideoCapturer : Form
             // The preview player is a cross-origin iframe = a separate CDP target (OOPIF); the top
             // target's Network domain won't see its videoplayback requests. Auto-attach (flatten) to
             // child targets and enable Network per session so their requests reach the same receiver.
+            // waitForDebuggerOnStart=true pauses each child target on creation so we can enable
+            // Network BEFORE it fires any request (otherwise early media requests race past us).
             await core.CallDevToolsProtocolMethodAsync("Target.setAutoAttach",
-                "{\"autoAttach\":true,\"waitForDebuggerOnStart\":false,\"flatten\":true}");
+                "{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true}");
             receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
             receiver.DevToolsProtocolEventReceived += OnRequest;
             attachRecv = core.GetDevToolsProtocolEventReceiver("Target.attachedToTarget");
@@ -279,8 +281,11 @@ public sealed class GoogleVideoCapturer : Form
         try { await core.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Network.enable", "{}"); }
         catch (Exception ex) { _log?.Invoke($"[DEBUG] Network.enable(session) loi: {ex.Message}"); }
         try { await core.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Target.setAutoAttach",
-            "{\"autoAttach\":true,\"waitForDebuggerOnStart\":false,\"flatten\":true}"); }
+            "{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true}"); }
         catch (Exception ex) { _log?.Invoke($"[DEBUG] setAutoAttach(session) loi: {ex.Message}"); }
+        // Resume the paused child now that Network is enabled (must always run or the page hangs).
+        try { await core.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Runtime.runIfWaitingForDebugger", "{}"); }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] runIfWaitingForDebugger loi: {ex.Message}"); }
     }
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
