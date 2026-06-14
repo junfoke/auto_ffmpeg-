@@ -63,6 +63,19 @@ public class DashStreamTests
     }
 
     [Fact]
+    public void StripRange_RemovesEmbeddedPlayerParams()
+    {
+        var url = "https://x.c.drive.google.com/videoplayback?itag=140&sig=ABC&lsig=DEF&alr=yes&cpn=xyz&c=WEB_EMBEDDED_PLAYER&cver=1.2&range=0-100&rn=2&rbuf=0&ump=1&srfvp=1";
+        var s = DashStream.StripRange(url);
+        foreach (var k in new[] { "alr=", "cpn=", "cver=", "ump=", "srfvp=", "range=", "rn=", "rbuf=" })
+            Assert.DoesNotContain(k, s);
+        Assert.DoesNotContain("c=WEB_EMBEDDED_PLAYER", s);
+        Assert.Contains("itag=140", s);
+        Assert.Contains("sig=ABC", s);
+        Assert.Contains("lsig=DEF", s);
+    }
+
+    [Fact]
     public void StripRange_NoQueryString_ReturnsUnchanged()
     {
         Assert.Equal("https://x.com/videoplayback", DashStream.StripRange("https://x.com/videoplayback"));

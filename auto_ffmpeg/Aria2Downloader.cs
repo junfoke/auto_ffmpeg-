@@ -36,6 +36,8 @@ public static class Aria2Downloader
             FileName = aria2c,
             Arguments = $"-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=1 " +
                         $"--allow-overwrite=true --auto-file-renaming=false " +
+                        $"--user-agent=\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\" " +
+                        $"--referer=\"https://drive.google.com/\" " +
                         $"-d \"{dir}\" -o \"{file}\" \"{url}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,

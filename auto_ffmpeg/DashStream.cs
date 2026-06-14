@@ -30,7 +30,8 @@ public static class DashStream
     }
 
     /// <summary>
-    /// Removes range-binding params (range/rn/rbuf) so the whole file is fetched.
+    /// Removes range-binding params (range/rn/rbuf) and embedded-player context params
+    /// (alr/cpn/c/cver/ump/srfvp) so the URL becomes a directly downloadable progressive file.
     /// Preserves original percent-encoding of all remaining params (e.g. mime=video%2Fmp4 stays literal).
     /// </summary>
     public static string StripRange(string url)
@@ -54,7 +55,12 @@ public static class DashStream
             .Where(pair =>
             {
                 var k = Uri.UnescapeDataString(RawKey(pair) ?? string.Empty);
-                return k is not ("range" or "rn" or "rbuf");
+                // Drop per-request range params AND embedded-player context params. The latter
+                // (c=WEB_EMBEDDED_PLAYER, ump, cpn, alr, ...) make the server serve the UMP/SABR
+                // stream and reject a plain download (403); removing them yields a directly
+                // downloadable progressive URL. None of these are covered by the signature (sparams).
+                return k is not ("range" or "rn" or "rbuf"
+                    or "alr" or "cpn" or "c" or "cver" or "ump" or "srfvp");
             });
 
         var joined = string.Join("&", kept);
