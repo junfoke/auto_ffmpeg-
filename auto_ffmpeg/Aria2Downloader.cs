@@ -26,7 +26,8 @@ public static class Aria2Downloader
             return false;
         }
 
-        var dir = Path.GetDirectoryName(outputPath)!;
+        var dir = Path.GetDirectoryName(outputPath);
+        if (string.IsNullOrEmpty(dir)) { onLog?.Invoke("[ERROR] outputPath phai co duong dan thu muc."); return false; }
         var file = Path.GetFileName(outputPath);
         Directory.CreateDirectory(dir);
 
@@ -43,14 +44,15 @@ public static class Aria2Downloader
         };
 
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        proc.OutputDataReceived += (_, e) =>
+        void HandleLine(string? data)
         {
-            if (e.Data == null) return;
-            onLog?.Invoke(e.Data);
-            var m = PctRegex.Match(e.Data);
+            if (data == null) return;
+            onLog?.Invoke(data);
+            var m = PctRegex.Match(data);
             if (m.Success && int.TryParse(m.Groups[1].Value, out var pct)) onProgress?.Invoke(pct);
-        };
-        proc.ErrorDataReceived += (_, e) => { if (e.Data != null) onLog?.Invoke(e.Data); };
+        }
+        proc.OutputDataReceived += (_, e) => HandleLine(e.Data);
+        proc.ErrorDataReceived  += (_, e) => HandleLine(e.Data);
 
         proc.Start();
         proc.BeginOutputReadLine();
@@ -63,16 +65,21 @@ public static class Aria2Downloader
         catch (OperationCanceledException)
         {
             try { proc.Kill(entireProcessTree: true); } catch { }
-            TryDelete(outputPath);
-            TryDelete(outputPath + ".aria2");
+            await TryDeleteAsync(outputPath);
+            await TryDeleteAsync(outputPath + ".aria2");
             throw;
         }
 
         return proc.ExitCode == 0;
     }
 
-    private static void TryDelete(string path)
+    private static async Task TryDeleteAsync(string path)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try { if (File.Exists(path)) File.Delete(path); return; }
+            catch (IOException) when (attempt < 2) { await Task.Delay(200); }
+            catch { return; }
+        }
     }
 }
