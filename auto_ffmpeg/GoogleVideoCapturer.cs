@@ -19,14 +19,16 @@ public sealed class GoogleVideoCapturer : Form
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private readonly Dictionary<string, (string url, long clen, bool isVideo)> _streams = new();
     private Action<string>? _log;
+    private int _reqSeen;     // diagnostics: total Network.requestWillBeSent observed
+    private int _gvSeen;      // diagnostics: requests to googlevideo
 
     public GoogleVideoCapturer()
     {
         Text = "Dang lay link video tu Google Drive...";
         Width = 900; Height = 600;
-        StartPosition = FormStartPosition.Manual;
-        Location = new Point(-32000, -32000);
-        Opacity = 0d;
+        // Visible on-screen: Chromium throttles/occludes hidden (Opacity=0) windows, which can
+        // suspend the player; showing it also lets the user click play if the synthetic click misses.
+        StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         ShowInTaskbar = false;
         Controls.Add(_web);
@@ -54,23 +56,43 @@ public sealed class GoogleVideoCapturer : Form
         catch (Exception ex) { _log?.Invoke($"[WARN] Khong khoi tao duoc WebView2: {ex.Message}"); return null; }
 
         var core = _web.CoreWebView2;
-        await TryReuseCookiesAsync(browser);
+        await TryReuseCookiesAsync(browser, fileId);
 
-        Microsoft.Web.WebView2.Core.CoreWebView2DevToolsProtocolEventReceiver? receiver = null;
+        CoreWebView2DevToolsProtocolEventReceiver? receiver = null;
+        CoreWebView2DevToolsProtocolEventReceiver? attachRecv = null;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         DateTime? firstSeen = null;
         try
         {
             await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            // The preview player is a cross-origin iframe = a separate CDP target (OOPIF); the top
+            // target's Network domain won't see its videoplayback requests. Auto-attach (flatten) to
+            // child targets and enable Network per session so their requests reach the same receiver.
+            await core.CallDevToolsProtocolMethodAsync("Target.setAutoAttach",
+                "{\"autoAttach\":true,\"waitForDebuggerOnStart\":false,\"flatten\":true}");
             receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
             receiver.DevToolsProtocolEventReceived += OnRequest;
+            attachRecv = core.GetDevToolsProtocolEventReceiver("Target.attachedToTarget");
+            attachRecv.DevToolsProtocolEventReceived += OnAttached;
+            core.NavigationCompleted += OnNavigationCompleted;
             core.NavigationStarting += OnNavigationStarting;
             core.Navigate($"https://drive.google.com/file/d/{fileId}/preview");
 
+            var lastClick = TimeSpan.FromSeconds(-10);
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(300, ct);
+
+                // The Drive preview player lives in a cross-origin iframe, so top-frame
+                // play() can't reach it. Until a stream is seen, synthesize a click at the
+                // center via CDP (origin-agnostic) to press the player's play button.
+                if (_streams.Count == 0 && sw.Elapsed - lastClick > TimeSpan.FromSeconds(2))
+                {
+                    lastClick = sw.Elapsed;
+                    await ClickCenterAsync(core);
+                }
                 try { await core.ExecuteScriptAsync("document.querySelector('video')?.play?.();"); } catch { }
+
                 bool hasV = _streams.Values.Any(s => s.isVideo);
                 bool hasA = _streams.Values.Any(s => !s.isVideo);
                 if (hasV && hasA)
@@ -86,6 +108,8 @@ public sealed class GoogleVideoCapturer : Form
         finally
         {
             if (receiver != null) receiver.DevToolsProtocolEventReceived -= OnRequest;
+            if (attachRecv != null) attachRecv.DevToolsProtocolEventReceived -= OnAttached;
+            core.NavigationCompleted -= OnNavigationCompleted;
             core.NavigationStarting -= OnNavigationStarting;
             try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
         }
@@ -94,7 +118,7 @@ public sealed class GoogleVideoCapturer : Form
         var audio = PickBest(_streams.Values.Where(s => !s.isVideo));
         if (video.url == null || audio.url == null)
         {
-            _log?.Invoke("[WARN] Khong bat duoc du video+audio stream.");
+            _log?.Invoke($"[WARN] Khong bat duoc du video+audio stream. (tong request={_reqSeen}, googlevideo={_gvSeen})");
             return null;
         }
 
@@ -112,6 +136,20 @@ public sealed class GoogleVideoCapturer : Form
         var mp4 = list.Where(s => DashStream.ExtFromMime(DashStream.GetQueryParam(s.url, "mime")) is "mp4" or "m4a")
                       .OrderByDescending(s => s.clen).FirstOrDefault();
         return mp4.url != null ? mp4 : list.OrderByDescending(s => s.clen).FirstOrDefault();
+    }
+
+    // Synthesize a left click at the player's center via CDP (works across the cross-origin
+    // preview iframe and even when the host window is off-screen).
+    private static async Task ClickCenterAsync(CoreWebView2 core)
+    {
+        const string press = "{\"type\":\"mousePressed\",\"x\":442,\"y\":280,\"button\":\"left\",\"clickCount\":1}";
+        const string release = "{\"type\":\"mouseReleased\",\"x\":442,\"y\":280,\"button\":\"left\",\"clickCount\":1}";
+        try
+        {
+            await core.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", press);
+            await core.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", release);
+        }
+        catch { }
     }
 
     private async Task InitWebViewAsync()
@@ -139,13 +177,50 @@ public sealed class GoogleVideoCapturer : Form
         }
     }
 
+    // Auto-attached child target (e.g. the cross-origin player iframe): enable Network on its
+    // session so its videoplayback requests flow to OnRequest (flatten routes them to one receiver).
+    private void OnAttached(object? sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
+            var root = doc.RootElement;
+            var sessionId = root.GetProperty("sessionId").GetString();
+            var ti = root.GetProperty("targetInfo");
+            var type = ti.GetProperty("type").GetString();
+            var url = ti.GetProperty("url").GetString();
+            _log?.Invoke($"[DEBUG] Attached target type={type} url={Trunc(url)}");
+            if (!string.IsNullOrEmpty(sessionId))
+                _ = EnableNetworkForSessionAsync(sessionId!);
+        }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] OnAttached loi: {ex.Message}"); }
+    }
+
+    private async Task EnableNetworkForSessionAsync(string sessionId)
+    {
+        try { await _web.CoreWebView2.CallDevToolsProtocolMethodForSessionAsync(sessionId, "Network.enable", "{}"); }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] Network.enable(session) loi: {ex.Message}"); }
+    }
+
+    private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        => _log?.Invoke($"[DEBUG] Navigation xong success={e.IsSuccess} url={Trunc(_web.CoreWebView2.Source)}");
+
+    private static string Trunc(string? s) => s == null ? "" : (s.Length > 120 ? s[..120] + "..." : s);
+
     private void OnRequest(object? sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
     {
         try
         {
             using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
             var url = doc.RootElement.GetProperty("request").GetProperty("url").GetString();
-            if (url == null || !url.Contains("videoplayback")) return;
+            if (url == null) return;
+            _reqSeen++;
+            if (url.Contains("googlevideo"))
+            {
+                _gvSeen++;
+                if (_gvSeen <= 4) _log?.Invoke($"[DEBUG] googlevideo req: {Trunc(url)}");
+            }
+            if (!url.Contains("videoplayback")) return;
 
             var mime = DashStream.GetQueryParam(url, "mime");
             bool isVideo = DashStream.IsVideoMime(mime);
@@ -172,7 +247,7 @@ public sealed class GoogleVideoCapturer : Form
     /// Try injecting Google cookies from a source browser into WebView2 to avoid login.
     /// browser: "firefox"/"chrome"/... or null/empty to skip.
     /// </summary>
-    private async Task TryReuseCookiesAsync(string? browser)
+    private async Task TryReuseCookiesAsync(string? browser, string fileId)
     {
         if (string.IsNullOrEmpty(browser)) return;
         var ytdlp = DriveDownloader.ResolveYtDlpPath();
@@ -181,10 +256,12 @@ public sealed class GoogleVideoCapturer : Form
         var tmp = Path.Combine(Path.GetTempPath(), $"af_cookies_{Guid.NewGuid():N}.txt");
         try
         {
+            // Use the real file URL so yt-dlp extracts successfully and writes the cookie jar
+            // (a generic drive.google.com/ URL is "Unsupported URL" and yt-dlp exits without writing cookies).
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = ytdlp,
-                Arguments = $"--cookies-from-browser \"{browser}\" --cookies \"{tmp}\" --skip-download --no-warnings \"https://drive.google.com/\"",
+                Arguments = $"--cookies-from-browser \"{browser}\" --cookies \"{tmp}\" --skip-download --no-warnings \"https://drive.google.com/file/d/{fileId}/view\"",
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true
             };
