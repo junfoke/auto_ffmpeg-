@@ -777,7 +777,8 @@ public class MainForm : Form
 
         var videoTmp = Path.Combine(outDir, $"{cap.Title}.video.{cap.VideoExt}");
         var audioTmp = Path.Combine(outDir, $"{cap.Title}.audio.{cap.AudioExt}");
-        var outPath  = Path.Combine(outDir, $"{cap.Title}.mp4");
+        var container = (cap.VideoExt == "mp4" && cap.AudioExt == "m4a") ? "mp4" : "mkv";
+        var outPath  = Path.Combine(outDir, $"{cap.Title}.{container}");
 
         try
         {

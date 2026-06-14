@@ -55,22 +55,22 @@ public sealed class GoogleVideoCapturer : Form
 
         var core = _web.CoreWebView2;
         await TryReuseCookiesAsync(browser);
-        await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
-        var receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
-        receiver.DevToolsProtocolEventReceived += OnRequest;
-        core.NavigationStarting += OnNavigationStarting;
 
-        core.Navigate($"https://drive.google.com/file/d/{fileId}/preview");
-
+        Microsoft.Web.WebView2.Core.CoreWebView2DevToolsProtocolEventReceiver? receiver = null;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         DateTime? firstSeen = null;
         try
         {
+            await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            receiver = core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
+            receiver.DevToolsProtocolEventReceived += OnRequest;
+            core.NavigationStarting += OnNavigationStarting;
+            core.Navigate($"https://drive.google.com/file/d/{fileId}/preview");
+
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(300, ct);
                 try { await core.ExecuteScriptAsync("document.querySelector('video')?.play?.();"); } catch { }
-
                 bool hasV = _streams.Values.Any(s => s.isVideo);
                 bool hasA = _streams.Values.Any(s => !s.isVideo);
                 if (hasV && hasA)
@@ -82,15 +82,16 @@ public sealed class GoogleVideoCapturer : Form
             }
         }
         catch (OperationCanceledException) { return null; }
+        catch (Exception ex) { _log?.Invoke($"[WARN] Loi khi bat link: {ex.Message}"); return null; }
         finally
         {
-            receiver.DevToolsProtocolEventReceived -= OnRequest;
+            if (receiver != null) receiver.DevToolsProtocolEventReceived -= OnRequest;
             core.NavigationStarting -= OnNavigationStarting;
             try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
         }
 
-        var video = _streams.Values.Where(s => s.isVideo).OrderByDescending(s => s.clen).FirstOrDefault();
-        var audio = _streams.Values.Where(s => !s.isVideo).OrderByDescending(s => s.clen).FirstOrDefault();
+        var video = PickBest(_streams.Values.Where(s => s.isVideo));
+        var audio = PickBest(_streams.Values.Where(s => !s.isVideo));
         if (video.url == null || audio.url == null)
         {
             _log?.Invoke("[WARN] Khong bat duoc du video+audio stream.");
@@ -102,6 +103,15 @@ public sealed class GoogleVideoCapturer : Form
             DashStream.StripRange(video.url), DashStream.ExtFromMime(DashStream.GetQueryParam(video.url, "mime")),
             DashStream.StripRange(audio.url), DashStream.ExtFromMime(DashStream.GetQueryParam(audio.url, "mime")),
             title);
+    }
+
+    // Prefer mp4/m4a streams so video+audio mux into .mp4 with stream-copy; fall back to any (e.g. webm) by largest clen.
+    private static (string url, long clen, bool isVideo) PickBest(IEnumerable<(string url, long clen, bool isVideo)> streams)
+    {
+        var list = streams.ToList();
+        var mp4 = list.Where(s => DashStream.ExtFromMime(DashStream.GetQueryParam(s.url, "mime")) is "mp4" or "m4a")
+                      .OrderByDescending(s => s.clen).FirstOrDefault();
+        return mp4.url != null ? mp4 : list.OrderByDescending(s => s.clen).FirstOrDefault();
     }
 
     private async Task InitWebViewAsync()

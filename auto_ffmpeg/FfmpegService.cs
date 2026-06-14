@@ -59,10 +59,11 @@ public static class FfmpegService
             ? "-c:v copy -c:a copy"
             : "-c:v copy -c:a aac -b:a 192k";
 
+        var faststart = output.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) ? "-movflags +faststart " : "";
         return $"-hide_banner -loglevel warning -progress pipe:1 " +
                $"-i \"{video}\" -i \"{audio}\" " +
                $"-map 0:v:0 -map 1:a:0 {codec} " +
-               $"-shortest -movflags +faststart -y \"{output}\"";
+               $"-shortest {faststart}-y \"{output}\"";
     }
 
     /// <summary>
