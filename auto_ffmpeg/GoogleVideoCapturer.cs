@@ -21,6 +21,7 @@ public sealed class GoogleVideoCapturer : Form
     private Action<string>? _log;
     private int _reqSeen;     // diagnostics: total Network.requestWillBeSent observed
     private int _gvSeen;      // diagnostics: requests to googlevideo
+    private readonly HashSet<string> _hosts = new();  // diagnostics: distinct request hosts seen
 
     public GoogleVideoCapturer()
     {
@@ -121,6 +122,9 @@ public sealed class GoogleVideoCapturer : Form
         if (video.url == null || audio.url == null)
         {
             _log?.Invoke($"[WARN] Khong bat duoc du video+audio stream. (tong request={_reqSeen}, googlevideo={_gvSeen})");
+            // If googlevideo=0, the media frame's requests still aren't visible (or media moved hosts):
+            // dump the distinct hosts seen so we can tell WHERE the player actually fetched from.
+            _log?.Invoke("[DEBUG] Hosts: " + string.Join(", ", _hosts.OrderBy(h => h)));
             return null;
         }
 
@@ -154,9 +158,34 @@ public sealed class GoogleVideoCapturer : Form
         catch { }
     }
 
+    /// <summary>
+    /// Build the (Cookie header, User-Agent) the authenticated browser session would send to <paramref name="url"/>,
+    /// so an external parallel downloader (aria2c, 16 connections) can replicate the exact request Google
+    /// accepts — single-connection downloads get throttled by googlevideo, parallel range requests don't.
+    /// </summary>
+    public async Task<(string cookieHeader, string userAgent)> GetSessionContextAsync(string url)
+    {
+        var core = _web.CoreWebView2;
+        string ua = core.Settings.UserAgent;
+        var cookies = await core.CookieManager.GetCookiesAsync(url);
+        var header = string.Join("; ", cookies.Select(c => $"{c.Name}={c.Value}"));
+        string host = Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "?";
+        _log?.Invoke($"[DEBUG] Session context: host={host} aria2c cookie count={cookies.Count} names={string.Join(",", cookies.Select(c => c.Name))}");
+        return (header, ua);
+    }
+
     private async Task InitWebViewAsync()
     {
-        var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder);
+        // Disable site isolation so the cross-origin preview-player iframe (and its nested media
+        // frame) run IN-PROCESS, sharing the top target's CDP session. Without this, those OOPIFs
+        // get their own renderer process + CDP session, and WebView2's event receiver — which is
+        // bound to the ROOT session only — never sees their videoplayback/googlevideo requests
+        // (nor the child-session attachedToTarget events the recursive auto-attach relied on).
+        var opts = new CoreWebView2EnvironmentOptions
+        {
+            AdditionalBrowserArguments = "--disable-features=IsolateOrigins,site-per-process --disable-site-isolation-trials"
+        };
+        var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder, opts);
         await _web.EnsureCoreWebView2Async(env);
     }
 
@@ -184,8 +213,25 @@ public sealed class GoogleVideoCapturer : Form
                 // Request stage: log the browser's exact headers once (to compare vs aria2c), then continue.
                 if (!root.TryGetProperty("responseStatusCode", out var sc))
                 {
+                    // Log the browser's EXACT headers (the request Google answers 200) so we can match them
+                    // in aria2c. Cookie VALUES are redacted (only names+count) — safe to share, no secrets.
                     if (!reqLogged && root.TryGetProperty("request", out var req) && req.TryGetProperty("headers", out var hh))
-                    { reqLogged = true; var raw = hh.GetRawText(); _log?.Invoke("[DEBUG] req headers: " + (raw.Length > 500 ? raw[..500] : raw)); }
+                    {
+                        reqLogged = true;
+                        var names = new List<string>();
+                        string? cookie = null;
+                        foreach (var p in hh.EnumerateObject())
+                        {
+                            if (p.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)) cookie = p.Value.GetString();
+                            else names.Add($"{p.Name}: {p.Value.GetString()}");
+                        }
+                        _log?.Invoke("[DEBUG] Browser req headers (non-cookie): " + string.Join(" | ", names));
+                        if (cookie != null)
+                        {
+                            var cn = cookie.Split("; ").Select(c => c.Split('=')[0]).ToArray();
+                            _log?.Invoke($"[DEBUG] Browser cookie count={cn.Length} names={string.Join(",", cn)}");
+                        }
+                    }
                     _ = core.CallDevToolsProtocolMethodAsync("Fetch.continueRequest", JsonSerializer.Serialize(new { requestId }));
                     return;
                 }
@@ -268,6 +314,127 @@ public sealed class GoogleVideoCapturer : Form
         }
     }
 
+    /// <summary>
+    /// Download <paramref name="url"/> FAST via parallel <c>&amp;range=</c> segments routed THROUGH the
+    /// browser's own network stack (CDP Network.loadNetworkResource + IO.read). These protected Drive
+    /// URLs validate client identity (TLS/HTTP-2 fingerprint), so external clients (HttpClient/aria2c)
+    /// get 403 — only the real Chromium stack returns 200. A single full GET is throttled by googlevideo
+    /// to ~playback rate; many bounded range requests each burst at full speed (what the player does).
+    /// Probes one segment first; returns false (caller falls back to single-stream) if unsupported.
+    /// </summary>
+    public async Task<bool> DownloadViaBrowserRangedAsync(string url, string outputPath, long totalSize, CancellationToken ct, Action<int>? onProgress)
+    {
+        if (totalSize <= 0) { _log?.Invoke("[DEBUG] Browser-ranged: thieu clen, bo qua."); return false; }
+        var core = _web.CoreWebView2;
+        const int SegmentSize = 4 * 1024 * 1024;
+        const int Parallelism = 8;   // CDP calls marshal to the UI thread; 8 in-flight is plenty
+        const int ReadChunk = 1024 * 1024;
+        var sep = url.Contains('?') ? "&" : "?";
+
+        string? frameId = null;
+        try
+        {
+            await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            await core.CallDevToolsProtocolMethodAsync("Page.enable", "{}");
+            var ft = await core.CallDevToolsProtocolMethodAsync("Page.getFrameTree", "{}");
+            using var d = JsonDocument.Parse(ft);
+            frameId = d.RootElement.GetProperty("frameTree").GetProperty("frame").GetProperty("id").GetString();
+        }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] getFrameTree loi: {ex.Message}"); }
+
+        // Open one range segment through the browser stack; returns its IO stream handle (or null) + status.
+        async Task<(string? handle, int status)> OpenAsync(string segUrl)
+        {
+            var p = JsonSerializer.Serialize(new { frameId, url = segUrl, options = new { disableCache = true, includeCredentials = true } });
+            var json = await core.CallDevToolsProtocolMethodAsync("Network.loadNetworkResource", p);
+            using var d = JsonDocument.Parse(json);
+            var res = d.RootElement.GetProperty("resource");
+            int status = res.TryGetProperty("httpStatusCode", out var sc) ? sc.GetInt32() : 0;
+            bool success = res.TryGetProperty("success", out var su) && su.GetBoolean();
+            string? handle = res.TryGetProperty("stream", out var st) ? st.GetString() : null;
+            return (success ? handle : null, status);
+        }
+
+        async Task CloseAsync(string handle)
+        { try { await core.CallDevToolsProtocolMethodAsync("IO.close", JsonSerializer.Serialize(new { handle })); } catch { } }
+
+        // Probe segment 0: confirm the browser stack accepts a range request before building the machinery.
+        long firstEnd = Math.Min(SegmentSize, totalSize) - 1;
+        var (probeHandle, probeStatus) = await OpenAsync($"{url}{sep}range=0-{firstEnd}");
+        _log?.Invoke($"[DEBUG] Browser-ranged probe: status={probeStatus} stream={(probeHandle != null)}");
+        if (probeHandle == null)
+        {
+            try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
+            return false;
+        }
+        await CloseAsync(probeHandle);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        var ranges = new List<(long start, long end)>();
+        for (long s = 0; s < totalSize; s += SegmentSize)
+            ranges.Add((s, Math.Min(s + SegmentSize, totalSize) - 1));
+
+        long downloaded = 0;
+        int lastPct = -1;
+        bool ok = false;
+        var fh = File.OpenHandle(outputPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite, FileOptions.Asynchronous);
+        using var sem = new SemaphoreSlim(Parallelism);
+
+        async Task Seg((long start, long end) r, int idx)
+        {
+            await sem.WaitAsync(ct);
+            try
+            {
+                var segUrl = $"{url}{sep}range={r.start}-{r.end}&rn={idx}&rbuf=0";
+                var (handle, status) = await OpenAsync(segUrl);
+                if (handle == null) throw new Exception($"loadNetworkResource status={status}");
+                try
+                {
+                    long offset = r.start;
+                    while (true)
+                    {
+                        var readJson = await core.CallDevToolsProtocolMethodAsync("IO.read",
+                            JsonSerializer.Serialize(new { handle, size = ReadChunk }));
+                        using var rd = JsonDocument.Parse(readJson);
+                        var root = rd.RootElement;
+                        if (root.TryGetProperty("data", out var dataEl))
+                        {
+                            var data = dataEl.GetString() ?? "";
+                            bool b64 = root.TryGetProperty("base64Encoded", out var be) && be.GetBoolean();
+                            var bytes = b64 ? Convert.FromBase64String(data) : System.Text.Encoding.UTF8.GetBytes(data);
+                            if (bytes.Length > 0)
+                            {
+                                await RandomAccess.WriteAsync(fh, bytes, offset, ct);
+                                offset += bytes.Length;
+                                long now = Interlocked.Add(ref downloaded, bytes.Length);
+                                int pct = (int)(now * 100 / totalSize);
+                                if (pct != lastPct) { lastPct = pct; onProgress?.Invoke(pct); }
+                            }
+                        }
+                        if (root.TryGetProperty("eof", out var e) && e.GetBoolean()) break;
+                    }
+                }
+                finally { await CloseAsync(handle); }
+            }
+            finally { sem.Release(); }
+        }
+
+        try
+        {
+            await Task.WhenAll(ranges.Select((r, i) => Seg(r, i)));
+            ok = downloaded >= totalSize;
+            return ok;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { _log?.Invoke($"[WARN] Browser-ranged that bai: {ex.Message}"); return false; }
+        finally
+        {
+            fh.Dispose();
+            if (!ok) { try { File.Delete(outputPath); } catch { } }
+            try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
+        }
+    }
+
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (e.Uri.Contains("accounts.google.com"))
@@ -334,6 +501,7 @@ public sealed class GoogleVideoCapturer : Form
             var url = doc.RootElement.GetProperty("request").GetProperty("url").GetString();
             if (url == null) return;
             _reqSeen++;
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u)) _hosts.Add(u.Host);
             if (url.Contains("googlevideo"))
             {
                 _gvSeen++;

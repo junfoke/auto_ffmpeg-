@@ -17,7 +17,9 @@ public static class Aria2Downloader
         string url, string outputPath,
         CancellationToken ct,
         Action<string>? onLog = null,
-        Action<int>? onProgress = null)
+        Action<int>? onProgress = null,
+        string? cookieHeader = null,
+        string? userAgent = null)
     {
         var aria2c = DriveDownloader.ResolveAria2cPath();
         if (aria2c is null)
@@ -31,13 +33,31 @@ public static class Aria2Downloader
         var file = Path.GetFileName(outputPath);
         Directory.CreateDirectory(dir);
 
+        var ua = string.IsNullOrEmpty(userAgent)
+            ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            : userAgent;
+        // Replicate the authenticated browser session so googlevideo returns 200 (not 403) for a
+        // download-restricted file. The browser succeeds with a top-level NAVIGATION request: besides
+        // the Cookie, it carries Sec-Fetch-* + Upgrade-Insecure-Requests headers that the server checks
+        // (the URL is origin-bound: obr=..., source=webdrive). Replicate that exact shape.
+        var cookieArg = "";
+        if (!string.IsNullOrEmpty(cookieHeader))
+            cookieArg = $"--header=\"Cookie: {cookieHeader}\" " +
+                        "--header=\"Sec-Fetch-Site: none\" " +
+                        "--header=\"Sec-Fetch-Mode: navigate\" " +
+                        "--header=\"Sec-Fetch-User: ?1\" " +
+                        "--header=\"Sec-Fetch-Dest: document\" " +
+                        "--header=\"Upgrade-Insecure-Requests: 1\" " +
+                        "--header=\"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8\" ";
+
         var psi = new ProcessStartInfo
         {
             FileName = aria2c,
             Arguments = $"-x 16 -s 16 -k 1M --console-log-level=warn --summary-interval=1 " +
                         $"--allow-overwrite=true --auto-file-renaming=false " +
-                        $"--user-agent=\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\" " +
+                        $"--user-agent=\"{ua}\" " +
                         $"--referer=\"https://drive.google.com/\" " +
+                        cookieArg +
                         $"-d \"{dir}\" -o \"{file}\" \"{url}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,

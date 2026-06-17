@@ -781,12 +781,11 @@ public class MainForm : Form
 
         try
         {
-            // Download through the SAME authenticated browser session (only client Google accepts).
             SetStatus("Dang tai video...");
-            if (!await capturer.DownloadViaBrowserAsync(cap.VideoUrl, videoTmp, ct, OnDriveProgress))
+            if (!await DownloadStreamFastAsync(cap.VideoUrl, videoTmp, capturer, ct))
             { AppendLog("[WARN] Tai video that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
             SetStatus("Dang tai audio...");
-            if (!await capturer.DownloadViaBrowserAsync(cap.AudioUrl, audioTmp, ct, OnDriveProgress))
+            if (!await DownloadStreamFastAsync(cap.AudioUrl, audioTmp, capturer, ct))
             { AppendLog("[WARN] Tai audio that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
             SetStatus("Dang ghep...");
             return await FfmpegService.MergeAsync(videoTmp, audioTmp, outPath, useCopy: true, fallbackAac: true, ct, OnDriveProgress, AppendLog);
@@ -796,6 +795,35 @@ public class MainForm : Form
             TryDeleteTemp(videoTmp);
             TryDeleteTemp(audioTmp);
         }
+    }
+
+    /// <summary>
+    /// Download one captured stream FAST: parallel aria2c (16 connections, like IDM) using the browser
+    /// session's cookies+UA to avoid 403 and googlevideo's single-connection throttle. Falls back to the
+    /// proven single-connection browser download if aria2c is unavailable or rejected.
+    /// </summary>
+    private async Task<bool> DownloadStreamFastAsync(string streamUrl, string outPath, GoogleVideoCapturer capturer, CancellationToken ct)
+    {
+        // Drive videoplayback streams range by &range= QUERY PARAM (not HTTP Range header), so aria2c/IDM
+        // get 403. Download via parallel &range= segments using the browser session's cookies+UA.
+        var (cookieHeader, ua) = await capturer.GetSessionContextAsync(streamUrl);
+        long.TryParse(DashStream.GetQueryParam(streamUrl, "clen"), out var clen);
+
+        // 1) Fastest: parallel &range= via HttpClient (works for unrestricted files; cheap probe, fails
+        //    fast on protected ones which validate client identity).
+        AppendLog($"[INFO] Tai song song theo range ({DriveSegmentDownloader.SegmentParallelism} luong, clen={clen})...");
+        if (clen > 0 && await DriveSegmentDownloader.DownloadAsync(streamUrl, outPath, clen, cookieHeader, ua, ct, AppendLog, OnDriveProgress))
+            return true;
+
+        // 2) Protected URLs (svpuc/vprv): parallel &range= routed THROUGH the browser network stack
+        //    (only the real Chromium stack returns 200, not HttpClient/aria2c).
+        AppendLog("[INFO] Thu tai song song qua trinh duyet (browser-ranged)...");
+        if (clen > 0 && await capturer.DownloadViaBrowserRangedAsync(streamUrl, outPath, clen, ct, OnDriveProgress))
+            return true;
+
+        // 3) Last resort: single-stream browser download (works but googlevideo-throttled).
+        AppendLog("[WARN] Tai song song that bai, chuyen sang tai 1 luong qua trinh duyet...");
+        return await capturer.DownloadViaBrowserAsync(streamUrl, outPath, ct, OnDriveProgress);
     }
 
     private Task<bool> FallbackYtdlpAsync(string url, string? browser, string outDir, CancellationToken ct)
