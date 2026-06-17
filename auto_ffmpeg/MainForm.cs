@@ -31,6 +31,7 @@ public class MainForm : Form
     readonly ProgressBar progress = new() { Style = ProgressBarStyle.Blocks, Minimum = 0, Maximum = 100, Height = 18 };
     readonly Button   btnCancel   = new() { Text = "Huy", Width = 80, Height = 32, Visible = false };
     readonly StringBuilder _logBuf = new();
+    readonly object _logLock = new();
     System.Windows.Forms.Timer _logTimer = null!;
     CancellationTokenSource? _cts;
     bool _hadError;
@@ -61,10 +62,13 @@ public class MainForm : Form
     // ====== Drive tab ======
     readonly TextBox txtDriveUrl       = new();
     readonly Button  btnDownloadDrive  = new() { Text = "TAI VE", Width = 180, Height = 38 };
-    readonly CheckBox chkUseCookies    = new() { Text = "Dung cookies tu Chrome", AutoSize = true };
-    readonly TextBox txtChromeProfile  = new() { Text = "Default", Width = 140, Enabled = false };
+    readonly ComboBox cboBrowser       = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+    readonly RadioButton rdoFast = new() { Text = "Nhanh (DASH qua trinh duyet)", AutoSize = true, Checked = true };
+    readonly RadioButton rdoYtdlp = new() { Text = "Thuong (yt-dlp)", AutoSize = true };
+    readonly TextBox txtChromeProfile  = new() { PlaceholderText = "mac dinh", Width = 140, Enabled = false };
     readonly TextBox txtCookiesFile    = new() { ReadOnly = true };
     readonly Button  btnPickCookies    = new() { Text = "cookies.txt..." };
+    readonly CheckBox chkFastDownload  = new() { Text = "Tang toc (aria2c)", AutoSize = true, Checked = true };
     readonly TextBox txtDriveOutDir    = new() { ReadOnly = true, Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
     readonly Button  btnPickDriveOutDir = new() { Text = "Thu muc..." };
 
@@ -76,7 +80,7 @@ public class MainForm : Form
         Text = "Auto FFmpeg Muxer";
         StartPosition = FormStartPosition.CenterScreen;
         Width = 940;
-        Height = 780;
+        Height = 840;
         Font = new Font("Segoe UI", 10f);
         BackColor = BgColor;
         ForeColor = TextColor;
@@ -206,7 +210,7 @@ public class MainForm : Form
         // ====== Root layout ======
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, BackColor = BgColor };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 84));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 340));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 400));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         header.Dock = DockStyle.Fill;
         bottom.Dock = DockStyle.Fill;
@@ -268,17 +272,29 @@ public class MainForm : Form
 
     Panel BuildDriveCard()
     {
-        var grid = NewFormGrid(5);
+        var grid = NewFormGrid(6);
         AddRow(grid, "Link Drive", txtDriveUrl, null, row: 0);
+
+        // method row
+        var methodFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, BackColor = PanelColor };
+        rdoFast.Margin = new Padding(0, 4, 16, 0);
+        rdoYtdlp.Margin = new Padding(0, 4, 0, 0);
+        methodFlow.Controls.Add(rdoFast);
+        methodFlow.Controls.Add(rdoYtdlp);
+        grid.Controls.Add(MakeLabel("Phuong thuc"), 0, 1);
+        grid.SetColumnSpan(methodFlow, 2);
+        grid.Controls.Add(methodFlow, 1, 1);
 
         // Cookies row
         var cookieFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, BackColor = PanelColor };
-        cookieFlow.Controls.Add(chkUseCookies);
+        cboBrowser.Items.AddRange(new object[] { "(Khong dung)", "Chrome", "Firefox", "Edge", "Brave" });
+        cboBrowser.SelectedIndex = 0;
+        cookieFlow.Controls.Add(cboBrowser);
         cookieFlow.Controls.Add(new Label { Text = "  Profile:", AutoSize = true, ForeColor = MutedColor, Padding = new Padding(0, 6, 4, 0) });
         cookieFlow.Controls.Add(txtChromeProfile);
-        grid.Controls.Add(MakeLabel("Cookies Chrome"), 0, 1);
+        grid.Controls.Add(MakeLabel("Cookies trinh duyet"), 0, 2);
         grid.SetColumnSpan(cookieFlow, 2);
-        grid.Controls.Add(cookieFlow, 1, 1);
+        grid.Controls.Add(cookieFlow, 1, 2);
 
         // cookies.txt
         var fileFlow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, AutoSize = true, BackColor = PanelColor };
@@ -289,19 +305,24 @@ public class MainForm : Form
         txtCookiesFile.Margin = new Padding(0, 0, 8, 0);
         fileFlow.Controls.Add(txtCookiesFile, 0, 0);
         fileFlow.Controls.Add(btnPickCookies, 1, 0);
-        grid.Controls.Add(MakeLabel("Hoac file cookies"), 0, 2);
+        grid.Controls.Add(MakeLabel("Hoac file cookies"), 0, 3);
         grid.SetColumnSpan(fileFlow, 2);
-        grid.Controls.Add(fileFlow, 1, 2);
+        grid.Controls.Add(fileFlow, 1, 3);
 
         // output dir
-        AddRow(grid, "Thu muc luu", txtDriveOutDir, btnPickDriveOutDir, row: 3);
+        AddRow(grid, "Thu muc luu", txtDriveOutDir, btnPickDriveOutDir, row: 4);
 
-        // action row
-        var actionFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Padding = new Padding(0, 14, 0, 0), BackColor = PanelColor };
-        actionFlow.Controls.Add(btnDownloadDrive);
-        grid.SetColumnSpan(actionFlow, 3);
-        grid.Controls.Add(actionFlow, 0, 4);
-        grid.RowStyles[4] = new RowStyle(SizeType.Absolute, 60);
+        // action row: checkbox left (vertically centered), download button right
+        var actionRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = PanelColor, Padding = new Padding(0, 14, 0, 0) };
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        chkFastDownload.Anchor = AnchorStyles.Left;
+        btnDownloadDrive.Anchor = AnchorStyles.Right;
+        actionRow.Controls.Add(chkFastDownload, 0, 0);
+        actionRow.Controls.Add(btnDownloadDrive, 1, 0);
+        grid.SetColumnSpan(actionRow, 3);
+        grid.Controls.Add(actionRow, 0, 5);
+        grid.RowStyles[5] = new RowStyle(SizeType.Absolute, 60);
 
         return grid;
     }
@@ -424,9 +445,13 @@ public class MainForm : Form
         _logTimer = new System.Windows.Forms.Timer { Interval = 150 };
         _logTimer.Tick += (_, _) =>
         {
-            if (_logBuf.Length == 0) return;
-            var s = _logBuf.ToString();
-            _logBuf.Clear();
+            string s;
+            lock (_logLock)
+            {
+                if (_logBuf.Length == 0) return;
+                s = _logBuf.ToString();
+                _logBuf.Clear();
+            }
             txtLog.AppendText(s);
             txtLog.SelectionStart = txtLog.TextLength;
             txtLog.ScrollToCaret();
@@ -445,7 +470,7 @@ public class MainForm : Form
         btnBatchMerge.Click  += async (_, _) => await RunBatchAsync();
         btnDownloadDrive.Click += async (_, _) => await RunDriveDownloadAsync();
         btnCancel.Click      += (_, _) => _cts?.Cancel();
-        chkUseCookies.CheckedChanged += (_, _) => txtChromeProfile.Enabled = chkUseCookies.Checked;
+        cboBrowser.SelectedIndexChanged += (_, _) => txtChromeProfile.Enabled = cboBrowser.SelectedIndex > 0;
         btnPickCookies.Click += (_, _) =>
         {
             using var ofd = new OpenFileDialog { Title = "Chon file cookies", Filter = "Text|*.txt|Tat ca|*.*" };
@@ -553,13 +578,16 @@ public class MainForm : Form
         progress.Value = Math.Clamp(percent, 0, 100);
     }
 
-    void AppendLog(string line) => _logBuf.AppendLine(line);
+    void AppendLog(string line)
+    {
+        lock (_logLock) _logBuf.AppendLine(line);
+    }
 
     // clears both the visible log and the pending buffer so a stale flush
     // from a previous run can't leak into the next one
     void ClearLog()
     {
-        _logBuf.Clear();
+        lock (_logLock) _logBuf.Clear();
         txtLog.Clear();
     }
 
@@ -728,6 +756,82 @@ public class MainForm : Form
 
     // ====== Drive download ======
 
+    private async Task<bool> DownloadFastAsync(string url, string outDir, string? browser, CancellationToken ct)
+    {
+        var fileId = DriveLink.ExtractFileId(url);
+        if (fileId is null) { AppendLog("[ERROR] Link Drive khong hop le."); return false; }
+
+        SetStatus("Dang lay link video (WebView2)...");
+        using var capturer = new GoogleVideoCapturer();
+        var cap = await capturer.CaptureAsync(fileId, browser, ct, AppendLog);
+
+        ct.ThrowIfCancellationRequested();
+
+        if (cap is null)
+        {
+            AppendLog("[WARN] Khong bat duoc link nhanh, chuyen sang yt-dlp...");
+            return await DriveDownloader.DownloadAsync(url, browser, txtChromeProfile.Text.Trim(),
+                txtCookiesFile.Text.Trim(), chkFastDownload.Checked, outDir, ct, AppendLog, OnDriveProgress);
+        }
+
+        var videoTmp = Path.Combine(outDir, $"{cap.Title}.video.{cap.VideoExt}");
+        var audioTmp = Path.Combine(outDir, $"{cap.Title}.audio.{cap.AudioExt}");
+        var container = (cap.VideoExt == "mp4" && cap.AudioExt == "m4a") ? "mp4" : "mkv";
+        var outPath  = Path.Combine(outDir, $"{cap.Title}.{container}");
+
+        try
+        {
+            SetStatus("Dang tai video...");
+            if (!await DownloadStreamFastAsync(cap.VideoUrl, videoTmp, capturer, ct))
+            { AppendLog("[WARN] Tai video that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
+            SetStatus("Dang tai audio...");
+            if (!await DownloadStreamFastAsync(cap.AudioUrl, audioTmp, capturer, ct))
+            { AppendLog("[WARN] Tai audio that bai, chuyen sang yt-dlp..."); return await FallbackYtdlpAsync(url, browser, outDir, ct); }
+            SetStatus("Dang ghep...");
+            return await FfmpegService.MergeAsync(videoTmp, audioTmp, outPath, useCopy: true, fallbackAac: true, ct, OnDriveProgress, AppendLog);
+        }
+        finally
+        {
+            TryDeleteTemp(videoTmp);
+            TryDeleteTemp(audioTmp);
+        }
+    }
+
+    /// <summary>
+    /// Download one captured stream FAST: parallel aria2c (16 connections, like IDM) using the browser
+    /// session's cookies+UA to avoid 403 and googlevideo's single-connection throttle. Falls back to the
+    /// proven single-connection browser download if aria2c is unavailable or rejected.
+    /// </summary>
+    private async Task<bool> DownloadStreamFastAsync(string streamUrl, string outPath, GoogleVideoCapturer capturer, CancellationToken ct)
+    {
+        // Drive videoplayback streams range by &range= QUERY PARAM (not HTTP Range header), so aria2c/IDM
+        // get 403. Download via parallel &range= segments using the browser session's cookies+UA.
+        var (cookieHeader, ua) = await capturer.GetSessionContextAsync(streamUrl);
+        long.TryParse(DashStream.GetQueryParam(streamUrl, "clen"), out var clen);
+
+        // 1) Fastest: parallel &range= via HttpClient (works for unrestricted files; cheap probe, fails
+        //    fast on protected ones which validate client identity).
+        AppendLog($"[INFO] Tai song song theo range ({DriveSegmentDownloader.SegmentParallelism} luong, clen={clen})...");
+        if (clen > 0 && await DriveSegmentDownloader.DownloadAsync(streamUrl, outPath, clen, cookieHeader, ua, ct, AppendLog, OnDriveProgress))
+            return true;
+
+        // 2) Protected URLs (svpuc/vprv): parallel &range= routed THROUGH the browser network stack
+        //    (only the real Chromium stack returns 200, not HttpClient/aria2c).
+        AppendLog("[INFO] Thu tai song song qua trinh duyet (browser-ranged)...");
+        if (clen > 0 && await capturer.DownloadViaBrowserRangedAsync(streamUrl, outPath, clen, ct, OnDriveProgress))
+            return true;
+
+        // 3) Last resort: single-stream browser download (works but googlevideo-throttled).
+        AppendLog("[WARN] Tai song song that bai, chuyen sang tai 1 luong qua trinh duyet...");
+        return await capturer.DownloadViaBrowserAsync(streamUrl, outPath, ct, OnDriveProgress);
+    }
+
+    private Task<bool> FallbackYtdlpAsync(string url, string? browser, string outDir, CancellationToken ct)
+        => DriveDownloader.DownloadAsync(url, browser, txtChromeProfile.Text.Trim(),
+            txtCookiesFile.Text.Trim(), chkFastDownload.Checked, outDir, ct, AppendLog, OnDriveProgress);
+
+    private static void TryDeleteTemp(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
+
     async Task RunDriveDownloadAsync()
     {
         string url = txtDriveUrl.Text.Trim();
@@ -757,11 +861,17 @@ public class MainForm : Form
 
         try
         {
-            var ok = await DriveDownloader.DownloadAsync(
-                url, chkUseCookies.Checked, txtChromeProfile.Text.Trim(),
-                txtCookiesFile.Text.Trim(),
-                outDir,
-                _cts!.Token, onLog: AppendLog, onProgress: OnDriveProgress);
+            var browser = cboBrowser.SelectedIndex > 0 ? cboBrowser.SelectedItem?.ToString()?.ToLowerInvariant() : null;
+            bool ok;
+            if (rdoFast.Checked)
+                ok = await DownloadFastAsync(url, outDir, browser, _cts!.Token);
+            else
+                ok = await DriveDownloader.DownloadAsync(
+                    url, browser, txtChromeProfile.Text.Trim(),
+                    txtCookiesFile.Text.Trim(),
+                    chkFastDownload.Checked,
+                    outDir,
+                    _cts!.Token, onLog: AppendLog, onProgress: OnDriveProgress);
 
             SetStatus(ok ? "Tai hoan tat!" : "Loi khi tai.", error: !ok);
         }
