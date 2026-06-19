@@ -10,6 +10,14 @@ public sealed record CaptureResult(
     string AudioUrl, string AudioExt,
     string Title);
 
+public sealed record ProbeResult(
+    int    TranscodeCount,
+    string HighestItag,
+    string HighestUrl,
+    int    PlainGetStatus,   // 0 = not run
+    double PlainGetMBps,     // 0 = not 2xx / not measured
+    int    RangeGetStatus);  // 0 = not run
+
 /// <summary>
 /// Hidden Form hosting a WebView2; opens the Drive player and captures the
 /// videoplayback requests (video + audio) via the CDP Network domain.
@@ -133,6 +141,125 @@ public sealed class GoogleVideoCapturer : Form
             DashStream.StripRange(video.url), DashStream.ExtFromMime(DashStream.GetQueryParam(video.url, "mime")),
             DashStream.StripRange(audio.url), DashStream.ExtFromMime(DashStream.GetQueryParam(audio.url, "mime")),
             title);
+    }
+
+    /// <summary>
+    /// DEBUG probe: opens the Drive player, captures the workspacevideo metadata JSON,
+    /// extracts the highest-quality progressiveTranscodes URL, then measures whether a
+    /// plain HttpClient can download it (status, single-stream MB/s, Range support).
+    /// Logs everything via onLog. Returns null if no JSON/transcode was captured.
+    /// </summary>
+    public async Task<ProbeResult?> ProbeProgressiveAsync(string fileId, string? browser, CancellationToken ct, Action<string>? onLog)
+    {
+        _log = onLog;
+        Show();
+
+        try
+        {
+            var initTask = InitWebViewAsync();
+            var done = await Task.WhenAny(initTask, Task.Delay(TimeSpan.FromSeconds(30), ct));
+            if (done != initTask) { _log?.Invoke("[WARN] WebView2 khoi tao qua lau/that bai."); return null; }
+            await initTask;
+        }
+        catch (Exception ex) { _log?.Invoke($"[WARN] Khong khoi tao duoc WebView2: {ex.Message}"); return null; }
+
+        var core = _web.CoreWebView2;
+        await TryReuseCookiesAsync(browser, fileId);
+
+        // Collect responseReceived requestIds whose URL is the workspacevideo API.
+        var pending = new Dictionary<string, string>();  // requestId -> url
+        string? capturedJson = null;
+
+        void OnResponse(object? s, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
+                var root = doc.RootElement;
+                var url = root.GetProperty("response").GetProperty("url").GetString() ?? "";
+                if (Uri.TryCreate(url, UriKind.Absolute, out var u)) _hosts.Add(u.Host);
+                if (!url.Contains("workspacevideo-pa.clients6.google.com")) return;
+                var requestId = root.GetProperty("requestId").GetString();
+                if (requestId != null) pending[requestId] = url;
+            }
+            catch { }
+        }
+
+        CoreWebView2DevToolsProtocolEventReceiver? respRecv = null;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
+            respRecv = core.GetDevToolsProtocolEventReceiver("Network.responseReceived");
+            respRecv.DevToolsProtocolEventReceived += OnResponse;
+            core.NavigationStarting += OnNavigationStarting;
+            core.Navigate($"https://drive.google.com/file/d/{fileId}/preview");
+
+            var lastClick = TimeSpan.FromSeconds(-10);
+            while (!ct.IsCancellationRequested && capturedJson == null)
+            {
+                await Task.Delay(300, ct);
+
+                if (sw.Elapsed.TotalSeconds < 8 && sw.Elapsed - lastClick > TimeSpan.FromSeconds(2))
+                {
+                    lastClick = sw.Elapsed;
+                    await ClickCenterAsync(core);
+                }
+                try { await core.ExecuteScriptAsync("document.querySelector('video')?.play?.();"); } catch { }
+
+                // Try to read the body of any captured workspacevideo response.
+                foreach (var kv in pending.ToList())
+                {
+                    try
+                    {
+                        var bodyJson = await core.CallDevToolsProtocolMethodAsync(
+                            "Network.getResponseBody",
+                            JsonSerializer.Serialize(new { requestId = kv.Key }));
+                        using var bd = JsonDocument.Parse(bodyJson);
+                        var body = bd.RootElement.GetProperty("body").GetString() ?? "";
+                        bool b64 = bd.RootElement.TryGetProperty("base64Encoded", out var be) && be.GetBoolean();
+                        var text = b64 ? System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(body)) : body;
+                        if (ProgressiveTranscodes.Parse(text).Count > 0) { capturedJson = text; break; }
+                        pending.Remove(kv.Key); // body present but no transcodes -> drop
+                    }
+                    catch { /* body not ready yet -> retry next loop */ }
+                }
+
+                if (sw.Elapsed.TotalSeconds > 40) break;
+            }
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex) { _log?.Invoke($"[WARN] Loi khi probe: {ex.Message}"); return null; }
+        finally
+        {
+            if (respRecv != null) respRecv.DevToolsProtocolEventReceived -= OnResponse;
+            core.NavigationStarting -= OnNavigationStarting;
+            try { await core.CallDevToolsProtocolMethodAsync("Network.disable", "{}"); } catch { }
+        }
+
+        if (capturedJson == null)
+        {
+            _log?.Invoke("[WARN] Khong bat duoc JSON workspacevideo. (workspacevideo=0)");
+            _log?.Invoke("[DEBUG] Hosts: " + string.Join(", ", _hosts.OrderBy(h => h)));
+            return null;
+        }
+
+        var transcodes = ProgressiveTranscodes.Parse(capturedJson);
+        _log?.Invoke($"[INFO] Tim thay {transcodes.Count} progressiveTranscodes. Title={ProgressiveTranscodes.Title(capturedJson)}");
+        foreach (var t in transcodes) _log?.Invoke($"[DEBUG]   itag={t.Itag} url={Trunc(t.Url)}");
+
+        var highest = ProgressiveTranscodes.Highest(transcodes)!;
+        _log?.Invoke($"[INFO] Chon highest: itag={highest.Itag}");
+
+        var (cookieHeader, userAgent) = await GetSessionContextAsync(highest.Url);
+        var (plainStatus, mbps, rangeStatus) = await MeasureHttpAsync(highest.Url, cookieHeader, userAgent, ct);
+
+        _log?.Invoke($"[RESULT] HttpClient GET status={plainStatus}  speed={mbps:F1} MB/s  Range status={rangeStatus}");
+        _log?.Invoke(plainStatus == 200
+            ? "[RESULT] => Progressive TAI DUOC bang HttpClient (khong bi khoa client-identity)."
+            : $"[RESULT] => Progressive KHONG tai duoc bang HttpClient (status={plainStatus}); van phai qua browser.");
+
+        return new ProbeResult(transcodes.Count, highest.Itag, highest.Url, plainStatus, mbps, rangeStatus);
     }
 
     // Prefer mp4/m4a streams so video+audio mux into .mp4 with stream-copy; fall back to any (e.g. webm) by largest clen.
@@ -492,6 +619,57 @@ public sealed class GoogleVideoCapturer : Form
         => _log?.Invoke($"[DEBUG] Navigation xong success={e.IsSuccess} url={Trunc(_web.CoreWebView2.Source)}");
 
     private static string Trunc(string? s) => s == null ? "" : (s.Length > 120 ? s[..120] + "..." : s);
+
+    // Measure a progressive URL with the browser's cookies+UA: plain GET status +
+    // single-stream MB/s over the first ~10MB, and a Range request's status (206 = ok).
+    // Never writes a file. Returns (plainStatus, mbps, rangeStatus); 0 = not obtained.
+    private async Task<(int plainStatus, double mbps, int rangeStatus)> MeasureHttpAsync(
+            string url, string cookieHeader, string userAgent, CancellationToken ct)
+    {
+        int plainStatus = 0, rangeStatus = 0;
+        double mbps = 0;
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true })
+        { Timeout = TimeSpan.FromSeconds(30) };
+
+        // Plain GET: status + speed over first ~10MB.
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            if (!string.IsNullOrEmpty(cookieHeader)) req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            if (!string.IsNullOrEmpty(userAgent)) req.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            plainStatus = (int)resp.StatusCode;
+            if (resp.IsSuccessStatusCode)
+            {
+                const long target = 10L * 1024 * 1024;
+                var buf = new byte[64 * 1024];
+                long read = 0;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                await using var s = await resp.Content.ReadAsStreamAsync(ct);
+                int n;
+                while (read < target && (n = await s.ReadAsync(buf, ct)) > 0) read += n;
+                sw.Stop();
+                if (sw.Elapsed.TotalSeconds > 0) mbps = read / 1024d / 1024d / sw.Elapsed.TotalSeconds;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] Plain GET loi: {ex.Message}"); }
+
+        // Range GET: 206 means parallel range via HttpClient is viable.
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            if (!string.IsNullOrEmpty(cookieHeader)) req.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            if (!string.IsNullOrEmpty(userAgent)) req.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            req.Headers.TryAddWithoutValidation("Range", "bytes=0-1048575");
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            rangeStatus = (int)resp.StatusCode;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { _log?.Invoke($"[DEBUG] Range GET loi: {ex.Message}"); }
+
+        return (plainStatus, mbps, rangeStatus);
+    }
 
     private void OnRequest(object? sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
     {
