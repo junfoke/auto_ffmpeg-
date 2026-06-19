@@ -62,6 +62,7 @@ public class MainForm : Form
     // ====== Drive tab ======
     readonly TextBox txtDriveUrl       = new();
     readonly Button  btnDownloadDrive  = new() { Text = "TAI VE", Width = 180, Height = 38 };
+    readonly Button  btnProbeProgressive = new() { Text = "Probe progressive (debug)", Width = 220, Height = 32 };
     readonly ComboBox cboBrowser       = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
     readonly RadioButton rdoFast = new() { Text = "Nhanh (DASH qua trinh duyet)", AutoSize = true, Checked = true };
     readonly RadioButton rdoYtdlp = new() { Text = "Thuong (yt-dlp)", AutoSize = true };
@@ -72,7 +73,7 @@ public class MainForm : Form
     readonly TextBox txtDriveOutDir    = new() { ReadOnly = true, Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
     readonly Button  btnPickDriveOutDir = new() { Text = "Thu muc..." };
 
-    Button[] ActionButtons => [btnRun, btnBatchMerge, btnDownloadDrive, btnScan,
+    Button[] ActionButtons => [btnRun, btnBatchMerge, btnDownloadDrive, btnProbeProgressive, btnScan,
                                 btnPickVideo, btnPickAudio, btnPickOutput, btnPickFolder, btnPickCookies, btnPickDriveOutDir];
 
     public MainForm()
@@ -98,6 +99,7 @@ public class MainForm : Form
         StyleSecondary(btnPickFolder);
         StyleSecondary(btnPickCookies);
         StyleSecondary(btnPickDriveOutDir);
+        StyleSecondary(btnProbeProgressive);
         StyleDanger(btnCancel);
 
         // Log styling
@@ -312,14 +314,17 @@ public class MainForm : Form
         // output dir
         AddRow(grid, "Thu muc luu", txtDriveOutDir, btnPickDriveOutDir, row: 4);
 
-        // action row: checkbox left (vertically centered), download button right
+        // action row: checkbox left (vertically centered), download + probe buttons right
         var actionRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = PanelColor, Padding = new Padding(0, 14, 0, 0) };
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         chkFastDownload.Anchor = AnchorStyles.Left;
-        btnDownloadDrive.Anchor = AnchorStyles.Right;
+        var actionBtnFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, BackColor = PanelColor };
+        actionBtnFlow.Controls.Add(btnProbeProgressive);
+        actionBtnFlow.Controls.Add(new Label { Width = 8 });
+        actionBtnFlow.Controls.Add(btnDownloadDrive);
         actionRow.Controls.Add(chkFastDownload, 0, 0);
-        actionRow.Controls.Add(btnDownloadDrive, 1, 0);
+        actionRow.Controls.Add(actionBtnFlow, 1, 0);
         grid.SetColumnSpan(actionRow, 3);
         grid.Controls.Add(actionRow, 0, 5);
         grid.RowStyles[5] = new RowStyle(SizeType.Absolute, 60);
@@ -469,6 +474,7 @@ public class MainForm : Form
         btnScan.Click        += (_, _) => ScanPairs();
         btnBatchMerge.Click  += async (_, _) => await RunBatchAsync();
         btnDownloadDrive.Click += async (_, _) => await RunDriveDownloadAsync();
+        btnProbeProgressive.Click += async (_, _) => await RunProbeProgressiveAsync();
         btnCancel.Click      += (_, _) => _cts?.Cancel();
         cboBrowser.SelectedIndexChanged += (_, _) => txtChromeProfile.Enabled = cboBrowser.SelectedIndex > 0;
         btnPickCookies.Click += (_, _) =>
@@ -831,6 +837,40 @@ public class MainForm : Form
             txtCookiesFile.Text.Trim(), chkFastDownload.Checked, outDir, ct, AppendLog, OnDriveProgress);
 
     private static void TryDeleteTemp(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
+
+    async Task RunProbeProgressiveAsync()
+    {
+        string url = txtDriveUrl.Text.Trim();
+        if (string.IsNullOrEmpty(url))
+        {
+            MessageBox.Show(this, "Hay nhap link Google Drive truoc.", "Thieu du lieu", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        var fileId = DriveLink.ExtractFileId(url);
+        if (fileId is null) { MessageBox.Show(this, "Link Drive khong hop le.", "Loi", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+        ClearLog();
+        SetProcessingState(true);
+        progress.Style = ProgressBarStyle.Marquee;
+        SetStatus("Dang probe progressive...");
+        try
+        {
+            var browser = cboBrowser.SelectedIndex > 0 ? cboBrowser.SelectedItem?.ToString()?.ToLowerInvariant() : null;
+            using var capturer = new GoogleVideoCapturer();
+            var result = await capturer.ProbeProgressiveAsync(fileId, browser, _cts!.Token, AppendLog);
+            SetStatus(result != null ? "Probe xong (xem log)." : "Probe khong bat duoc JSON.", error: result == null);
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("Da huy probe.");
+            AppendLog("[INFO] Nguoi dung da huy.");
+        }
+        finally
+        {
+            progress.Style = ProgressBarStyle.Blocks;
+            SetProcessingState(false);
+        }
+    }
 
     async Task RunDriveDownloadAsync()
     {
