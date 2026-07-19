@@ -116,6 +116,62 @@ public static class FfmpegService
         return 0;
     }
 
+    /// <summary>
+    /// ffprobe duration (µs) for an HLS URL, sending the same Referer/UA headers. 0 on failure.
+    /// </summary>
+    public static async Task<long> GetHlsDurationUsAsync(string url, string referer, string userAgent)
+    {
+        var ffprobePath = ResolveFfprobePath();
+        if (ffprobePath is null) return 0;
+
+        var ua = string.IsNullOrWhiteSpace(userAgent) ? "" : $"-user_agent \"{userAgent}\" ";
+        var hdr = string.IsNullOrWhiteSpace(referer) ? "" : $"-headers \"Referer: {referer}\\r\\n\" ";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffprobePath,
+            Arguments = $"-v error {ua}{hdr}-show_entries format=duration -of csv=p=0 \"{url}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
+
+        try
+        {
+            using var p = Process.Start(psi);
+            if (p is null) return 0;
+            string? line = await p.StandardOutput.ReadLineAsync();
+            await p.WaitForExitAsync();
+            if (double.TryParse(line?.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var secs))
+                return (long)(secs * 1_000_000);
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>
+    /// Download an HLS (.m3u8) URL to mp4 via ffmpeg. Probes duration for real progress;
+    /// falls back to indeterminate (no onProgress calls) when duration is unknown.
+    /// </summary>
+    public static async Task<bool> DownloadHlsAsync(
+        string url, string output, string referer, string userAgent,
+        CancellationToken ct,
+        Action<int>? onProgress = null,
+        Action<string>? onLog = null)
+    {
+        var ffmpegPath = ResolveFfmpegPath();
+        if (ffmpegPath is null) return false;
+
+        var dir = Path.GetDirectoryName(output);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        long durationUs = await GetHlsDurationUsAsync(url, referer, userAgent);
+        if (durationUs == 0) onLog?.Invoke("[INFO] Khong lay duoc thoi luong, thanh tien trinh se chay khong xac dinh.");
+
+        var args = BuildHlsArgs(url, output, referer, userAgent, withProgress: true);
+        return await RunFfmpegAsync(ffmpegPath, args, durationUs, ct, onProgress, onLog);
+    }
+
     private static string? ResolveFfprobePath()
     {
         // ffprobe is typically next to ffmpeg
