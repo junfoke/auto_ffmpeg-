@@ -66,6 +66,26 @@ public static class FfmpegService
                $"-shortest {faststart}-y \"{output}\"";
     }
 
+    private const string HlsAllowedExts = "ts,mp4,m4s,aac,mpegts,dts";
+
+    /// <summary>
+    /// Build ffmpeg args to download an HLS (.m3u8) URL to an mp4 file, using the
+    /// proven Bunny/mediadelivery parameters. referer/userAgent are omitted when empty.
+    /// </summary>
+    public static string BuildHlsArgs(string url, string output, string referer, string userAgent, bool withProgress)
+    {
+        var ua = string.IsNullOrWhiteSpace(userAgent) ? "" : $"-user_agent \"{userAgent}\" ";
+        var hdr = string.IsNullOrWhiteSpace(referer) ? "" : $"-headers \"Referer: {referer}\\r\\n\" ";
+        var prog = withProgress ? "-progress pipe:1 " : "";
+        return $"-hide_banner -loglevel warning {prog}" +
+               $"{ua}{hdr}" +
+               $"-extension_picky 0 " +
+               $"-allowed_extensions {HlsAllowedExts} -allowed_segment_extensions {HlsAllowedExts} " +
+               $"-i \"{url}\" " +
+               $"-c copy -bsf:a aac_adtstoasc " +
+               $"-y \"{output}\"";
+    }
+
     /// <summary>
     /// Run ffprobe to get duration in microseconds. Returns 0 on failure.
     /// </summary>
