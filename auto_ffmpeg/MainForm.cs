@@ -73,7 +73,15 @@ public class MainForm : Form
     readonly TextBox txtDriveOutDir    = new() { ReadOnly = true, Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) };
     readonly Button  btnPickDriveOutDir = new() { Text = "Thu muc..." };
 
-    Button[] ActionButtons => [btnRun, btnBatchMerge, btnDownloadDrive, btnProbeProgressive, btnScan,
+    // ====== HLS (m3u8) tab ======
+    readonly TextBox txtHlsUrl = new();
+    readonly RadioButton rdoHlsFfmpeg = new() { Text = "ffmpeg (nhanh, khong resume)", AutoSize = true, Checked = true };
+    readonly RadioButton rdoHlsYtdlp = new() { Text = "yt-dlp (tu resume)", AutoSize = true };
+    readonly TextBox txtReferer = new() { Text = "https://iframe.mediadelivery.net/" };
+    readonly TextBox txtUserAgent = new() { Text = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36" };
+    readonly Button btnDownloadHls = new() { Text = "TAI VE", Width = 180, Height = 38 };
+
+    Button[] ActionButtons => [btnRun, btnBatchMerge, btnDownloadDrive, btnProbeProgressive, btnScan, btnDownloadHls,
                                 btnPickVideo, btnPickAudio, btnPickOutput, btnPickFolder, btnPickCookies, btnPickDriveOutDir];
 
     public MainForm()
@@ -100,6 +108,7 @@ public class MainForm : Form
         StyleSecondary(btnPickCookies);
         StyleSecondary(btnPickDriveOutDir);
         StyleSecondary(btnProbeProgressive);
+        StylePrimary(btnDownloadHls);
         StyleDanger(btnCancel);
 
         // Log styling
@@ -141,9 +150,11 @@ public class MainForm : Form
         var tabSingle = new TabPage("Ghep 1 cap") { AllowDrop = true, BackColor = BgColor, Padding = new Padding(14) };
         var tabBatch  = new TabPage("Ghep theo thu muc") { AllowDrop = true, BackColor = BgColor, Padding = new Padding(14) };
         var tabDrive  = new TabPage("Tai tu Google Drive") { BackColor = BgColor, Padding = new Padding(14) };
+        var tabHls    = new TabPage("Tai m3u8 / HLS") { BackColor = BgColor, Padding = new Padding(14) };
         tabs.TabPages.Add(tabSingle);
         tabs.TabPages.Add(tabBatch);
         tabs.TabPages.Add(tabDrive);
+        tabs.TabPages.Add(tabHls);
 
         // ====== Single tab content ======
         tabSingle.Controls.Add(BuildCard(BuildSingleCard()));
@@ -153,6 +164,9 @@ public class MainForm : Form
 
         // ====== Drive tab content ======
         tabDrive.Controls.Add(BuildCard(BuildDriveCard()));
+
+        // ====== HLS tab content ======
+        tabHls.Controls.Add(BuildCard(BuildHlsCard()));
 
         // ====== Bottom shared area ======
         var bottom = new Panel { Dock = DockStyle.Fill, BackColor = BgColor, Padding = new Padding(14, 6, 14, 14) };
@@ -332,6 +346,33 @@ public class MainForm : Form
         return grid;
     }
 
+    Panel BuildHlsCard()
+    {
+        var grid = NewFormGrid(5);
+        AddRow(grid, "Link m3u8", txtHlsUrl, null, row: 0);
+
+        // method row
+        var methodFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, BackColor = PanelColor };
+        rdoHlsFfmpeg.Margin = new Padding(0, 4, 16, 0);
+        rdoHlsYtdlp.Margin = new Padding(0, 4, 0, 0);
+        methodFlow.Controls.Add(rdoHlsFfmpeg);
+        methodFlow.Controls.Add(rdoHlsYtdlp);
+        grid.Controls.Add(MakeLabel("Phuong thuc"), 0, 1);
+        grid.SetColumnSpan(methodFlow, 2);
+        grid.Controls.Add(methodFlow, 1, 1);
+
+        AddRow(grid, "Referer", txtReferer, null, row: 2);
+        AddRow(grid, "User-Agent", txtUserAgent, null, row: 3);
+
+        var actionFlow = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Padding = new Padding(0, 14, 0, 0), BackColor = PanelColor };
+        actionFlow.Controls.Add(btnDownloadHls);
+        grid.SetColumnSpan(actionFlow, 3);
+        grid.Controls.Add(actionFlow, 0, 4);
+        grid.RowStyles[4] = new RowStyle(SizeType.Absolute, 60);
+
+        return grid;
+    }
+
     TableLayoutPanel NewFormGrid(int rows)
     {
         var t = new TableLayoutPanel
@@ -475,6 +516,7 @@ public class MainForm : Form
         btnBatchMerge.Click  += async (_, _) => await RunBatchAsync();
         btnDownloadDrive.Click += async (_, _) => await RunDriveDownloadAsync();
         btnProbeProgressive.Click += async (_, _) => await RunProbeProgressiveAsync();
+        btnDownloadHls.Click += async (_, _) => await RunHlsDownloadAsync();
         btnCancel.Click      += (_, _) => _cts?.Cancel();
         cboBrowser.SelectedIndexChanged += (_, _) => txtChromeProfile.Enabled = cboBrowser.SelectedIndex > 0;
         btnPickCookies.Click += (_, _) =>
@@ -914,6 +956,67 @@ public class MainForm : Form
                     _cts!.Token, onLog: AppendLog, onProgress: OnDriveProgress);
 
             SetStatus(ok ? "Tai hoan tat!" : "Loi khi tai.", error: !ok);
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("Da huy tai.");
+            AppendLog("[INFO] Nguoi dung da huy.");
+        }
+        finally
+        {
+            progress.Style = ProgressBarStyle.Blocks;
+            SetProcessingState(false);
+        }
+    }
+
+    async Task RunHlsDownloadAsync()
+    {
+        string url = txtHlsUrl.Text.Trim();
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "Hay nhap link m3u8 hop le (bat dau bang http).", "Thieu du lieu", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        bool useFfmpeg = rdoHlsFfmpeg.Checked;
+
+        if (useFfmpeg && FfmpegService.ResolveFfmpegPath() is null)
+        {
+            MessageBox.Show(this, "Khong tim thay ffmpeg.\n- Dat ffmpeg.exe cung thu muc .exe cua ung dung, hoac\n- Them ffmpeg vao PATH.", "Thieu ffmpeg", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!useFfmpeg && DriveDownloader.ResolveYtDlpPath() is null)
+        {
+            MessageBox.Show(this, "Khong tim thay yt-dlp.\n- Dat yt-dlp.exe cung thu muc .exe cua ung dung, hoac\n- Them yt-dlp vao PATH.", "Thieu yt-dlp", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        string output;
+        using (var sfd = new SaveFileDialog { Title = "Luu video m3u8", Filter = "MP4|*.mp4", DefaultExt = "mp4", FileName = "video.mp4" })
+        {
+            if (sfd.ShowDialog(this) != DialogResult.OK) return;
+            output = sfd.FileName;
+        }
+
+        string referer = txtReferer.Text.Trim();
+        string ua = txtUserAgent.Text.Trim();
+
+        ClearLog();
+        SetProcessingState(true);
+        progress.Style = ProgressBarStyle.Marquee;
+        SetStatus("Dang tai m3u8...");
+
+        try
+        {
+            bool ok = useFfmpeg
+                ? await FfmpegService.DownloadHlsAsync(url, output, referer, ua, _cts!.Token, OnDriveProgress, AppendLog)
+                : await HlsDownloader.DownloadWithYtDlpAsync(url, output, referer, ua, _cts!.Token, AppendLog, OnDriveProgress);
+
+            SetStatus(ok ? "Tai hoan tat!" : "Loi khi tai.", error: !ok);
+            if (ok)
+            {
+                try { System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{output}\""); } catch { }
+            }
         }
         catch (OperationCanceledException)
         {
